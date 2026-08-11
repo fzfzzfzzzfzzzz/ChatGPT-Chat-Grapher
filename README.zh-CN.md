@@ -4,7 +4,11 @@
 
 Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保存第二份聊天内容，而是自动捕获用户实际发送的问题，维护 Question Tree / Forest，并帮助用户随时看见当前路径、未完成分支和原始消息位置。
 
-当前代码对应 **v0.9.0 - Multi-provider AI API**。
+当前代码对应 **v0.12.0 - 本地 JSON 数据备份**。
+
+## 浮窗效果
+
+![Chat Graph 在 ChatGPT 页面内的浮窗图视角](release-assets/v0.12.0/screenshots/04-floating-panel-in-chatgpt.png)
 
 ## 当前能力
 
@@ -18,20 +22,21 @@ Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保
 - 点选补录会临时读取紧随问题之后的 Assistant 回答，用于摘要和父节点推荐，但不保存回答正文
 - 一键读取当前 ChatGPT 会话的全部用户问题，按顺序建立独立的线性问题图
 - 浮窗图和完整图的节点右键菜单支持查看详情、标记状态和删除节点
+- 新节点统一默认为“待讨论”；新增子节点、修改父节点或批量建图不会自动完结节点，状态仅由用户手动修改
 - Node 用户内容严格为 `question / summary / status`
 - 支持百炼、OpenAI、Anthropic、Gemini、DeepSeek、OpenRouter 和自定义 OpenAI 兼容服务生成简短 summary、推荐逻辑父节点
 - 每个 AI 厂商独立保存 API Key 与模型；Anthropic 使用原生 Messages API，其余服务走 OpenAI Chat Completions 兼容协议
-- 高置信度自动连接；中低置信度或 API 失败进入待整理列表
+- 高置信度自动连接；中低置信度或 API 失败进入待讨论列表
 - 支持无父节点、多根节点、更换/移除父节点、设为根节点和循环保护
 - 自动连接支持 Undo
 - 默认展示 Current Path、当前焦点与 Open Branches
 - 浮窗“查看父节点”只切换到父节点详情，不修改项目焦点；侧栏的返回主线操作仍只改变焦点，不破坏父子关系
 - Question Forest Graph，高亮 Current Path，双击可折叠子树
-- Node 可跳回对应 Chat，并尽量滚动/高亮原始用户消息
-- 跨会话跳转会优先复用已打开的 ChatGPT 标签页；未打开时由用户选择新标签页或当前页
-- Graph 节点首次单击设为 Current，再次单击可确认定位原问题；右键可查看详情、标记状态或删除。侧栏搜索可检索当前项目内的 question / summary 并跨会话定位
+- 当前会话打开在本页时，Node 可滚动并高亮对应的原始用户消息
+- Graph 节点首次单击设为 Current，再次单击可确认定位当前页面中的原问题；右键可查看详情、标记状态或删除。侧栏搜索可检索当前项目内的 question / summary
 - 对 ChatGPT 虚拟化历史进行滚动扫描，可捕获和定位当前未挂载在 DOM 中的旧问题
 - Dexie + IndexedDB 本地持久化；刷新和重启后恢复 Graph、status 与 focus
+- 支持将全部项目图导出为带版本信息的 JSON，并以不覆盖现有数据的项目副本方式导入
 - 旧 v0.4 Branch 数据在首次打开时迁移为 v0.5 Question Node
 
 当前明确没有 Decision/Reason/Resource/Routes 知识库、Answer 自动拆 Node、Assistant Answer 全文搜索、Context Packet、Supabase、账号或云同步。
@@ -40,11 +45,11 @@ Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保
 
 ### Chrome
 
-1. 从 [最新 Release](https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher/releases/latest) 下载 `chatgpt-discussion-map-0.9.0-chrome.zip`
+1. 从 [最新 Release](https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher/releases/latest) 下载 `chatgpt-discussion-map-0.12.0-chrome.zip`
 2. 将 ZIP 解压到一个准备长期保留的目录
 3. 打开 `chrome://extensions/`，启用“开发者模式”
 4. 点击“加载已解压的扩展程序”，选择刚才解压的目录
-5. 打开或刷新 [ChatGPT](https://chatgpt.com/)
+5. 打开 [ChatGPT](https://chatgpt.com/)；若页面早已打开，可直接从侧栏点击“打开页面浮窗”，无需刷新
 
 手动加载的 Chrome 扩展不会自动更新。后续版本需要替换解压目录中的文件，在扩展管理页点击“重新加载”，然后刷新 ChatGPT 页面。
 
@@ -67,7 +72,7 @@ npm run dev:chrome
 npm run dev:firefox
 ```
 
-打开 ChatGPT 后，页面右上区域显示 Chat Graph 工作态浮窗；Chrome 可从浮窗按钮直接打开 Side Panel，Firefox 使用工具栏 Chat Graph 图标或 `Alt+Shift+G` 打开 Sidebar。未配置 AI 时，新问题仍会立即显示为 Current，并进入待整理列表等待人工选择父节点或设为根节点。
+打开 ChatGPT 后，页面右上区域显示 Chat Graph 工作态浮窗；Chrome 可从浮窗按钮直接打开 Side Panel，Firefox 使用工具栏 Chat Graph 图标或 `Alt+Shift+G` 打开 Sidebar。侧栏顶部可重新打开已关闭或收起的页面浮窗。未配置 AI 时，新问题仍会立即显示为 Current，并进入待讨论列表等待人工选择父节点或设为根节点。
 
 常用命令：
 
@@ -93,6 +98,7 @@ npm run check          # compile + test + 双浏览器 build
 - 不保存 Assistant Answer，不建立自己的完整聊天数据库
 - AI 仅接收新 question、fallback summary、Current Path 和最多 30 个候选 Node 的 `id/question/summary/status`；页面点选补录时会额外发送截断后的对应 Assistant 回答作为单次分析上下文
 - API Key 仅保存在扩展 `storage.local`，不写入日志或 IndexedDB
+- JSON 备份包含问题图与消息定位信息，不包含 AI 设置或 API Key；导入会创建新的项目副本
 - 非百炼厂商仅在用户保存启用设置或测试连接时申请对应 HTTPS 域名权限；失败时不会自动切换到其他厂商
 - 不存在云同步、分析统计和账号系统
 
@@ -106,7 +112,7 @@ adapters/      Chat URL、提交捕获、message identity 与原消息定位
 ai/            Parent Recommendation prompt、schema parser、多厂商协议客户端与 provider registry
 graph/         Question service、Current Path/Open Branches、Graph 布局
 db/            IndexedDB schema、旧数据 migration 与 repositories
-components/    Current Path、Inbox、Graph、Node Detail UI
+components/    Current / Parent、待讨论、Graph、Node Detail UI
 settings/      本地 AI 配置
 tests/         领域、解析、URL、交互与 Graph 回归测试
 docs/          Roadmap、浏览器说明、版本 PRD 与 Release Notes

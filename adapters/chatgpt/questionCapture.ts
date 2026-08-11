@@ -1,5 +1,5 @@
 import type { CapturedQuestion, MessageLocator } from "../../types/domain";
-import type { LocateQuestionMethod } from "../../shared/messages";
+import type { LocateQuestionMethod, LocateQuestionResponse } from "../../shared/messages";
 import { getConversationMetaFromPage } from "./getConversation";
 import { CHATGPT_SELECTORS } from "./selectors";
 
@@ -309,6 +309,45 @@ function stableMessageId(value: string | undefined): string | undefined {
 
 function getUserMessages(root: ParentNode): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(CHATGPT_SELECTORS.userMessage));
+}
+
+export async function locateQuestionOnCurrentPage(
+  request: {
+    chatId: string;
+    messageId: string;
+    messageAnchor?: string;
+    messageLocator?: MessageLocator;
+  },
+  currentChatId: string | undefined,
+  root: ParentNode = document,
+): Promise<LocateQuestionResponse> {
+  if (!getUserMessages(root).length) {
+    return {
+      ok: false,
+      code: "CONVERSATION_UNAVAILABLE",
+      error: "页面没有加载到会话内容。",
+    };
+  }
+
+  const method = await locateQuestionMessageWithHistory(
+    request.messageId,
+    request.messageAnchor,
+    request.messageLocator,
+    root,
+  );
+  if (method) return { ok: true, method };
+  if (currentChatId !== request.chatId) {
+    return {
+      ok: false,
+      code: "WRONG_CONVERSATION",
+      error: "当前页面没有找到该问题。",
+    };
+  }
+  return {
+    ok: false,
+    code: "MESSAGE_NOT_FOUND",
+    error: "已扫描当前会话，但没有找到原问题。",
+  };
 }
 
 function getAssistantContextForQuestion(

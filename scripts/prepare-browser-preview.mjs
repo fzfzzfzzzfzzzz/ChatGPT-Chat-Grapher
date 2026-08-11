@@ -13,6 +13,7 @@ const browserMock = String.raw`<script>
     globalThis.chrome = {
       runtime: {
         id: "discussion-map-preview",
+        getManifest() { return { version: "0.12.0" }; },
         onMessage: event,
         async sendMessage() { return undefined; },
       },

@@ -1,4 +1,5 @@
 import { defineConfig } from "wxt";
+import packageJson from "./package.json" with { type: "json" };
 
 export default defineConfig({
   targetBrowsers: ["chrome", "firefox"],
@@ -17,7 +18,7 @@ export default defineConfig({
   manifest: ({ browser }) => ({
     name: "Chat Graph",
     description: "Keep the current ChatGPT question and its parent visible while you work.",
-    version: "0.9.0",
+    version: packageJson.version,
     ...(browser === "chrome"
       ? { minimum_chrome_version: "116" }
       : {
@@ -29,7 +30,7 @@ export default defineConfig({
             },
           },
         }),
-    permissions: ["storage"],
+    permissions: ["storage", "scripting"],
     ...(browser === "chrome"
       ? { optional_host_permissions: ["https://*/*"] }
       : { optional_permissions: ["https://*/*"] }),
@@ -38,8 +39,19 @@ export default defineConfig({
       "https://chat.openai.com/*",
       "https://*.aliyuncs.com/*",
     ],
+    icons: {
+      16: "icon/16.png",
+      32: "icon/32.png",
+      48: "icon/48.png",
+      96: "icon/96.png",
+      128: "icon/128.png",
+    },
     action: {
       default_title: "Open Chat Graph",
+      default_icon: {
+        16: "icon/16.png",
+        32: "icon/32.png",
+      },
     },
     ...(browser === "firefox"
       ? {

@@ -45,7 +45,6 @@ import { CompactProjectGraph } from "./CompactProjectGraph";
 import {
   type BuildCurrentPageGraphResponse,
   type CaptureQuestionResponse,
-  type ConversationOpenMode,
   type ExtensionMessage,
   type FloatingPanelGraphNode,
   type FloatingPanelMode,
@@ -59,6 +58,7 @@ import {
 } from "../../shared/messages";
 import { isExtensionMessage } from "../../shared/messages";
 import type { NodeStatus } from "../../types/domain";
+import { FLOATING_PANEL_READY_EVENT } from "./panelLifecycle";
 
 const PANEL_PREFERENCES_KEY = "floatingPanelPreferencesV06";
 const REQUESTED_SIDE_PANEL_VIEW_KEY = "requestedSidePanelView";
@@ -138,7 +138,6 @@ export function FloatingNavigationPanel() {
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [confirmingNavigationTarget, setConfirmingNavigationTarget] = useState<NavigationTarget>();
-  const [pendingNavigationTarget, setPendingNavigationTarget] = useState<NavigationTarget>();
   const [navigationBusy, setNavigationBusy] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(getPageTheme);
 
@@ -208,7 +207,6 @@ export function FloatingNavigationPanel() {
         clearGraphSelection();
         setEditingParent(false);
         setConfirmingNavigationTarget(undefined);
-        setPendingNavigationTarget(undefined);
         closeProjectMenu();
         setMode("working");
         setPanelView("current");
@@ -258,6 +256,7 @@ export function FloatingNavigationPanel() {
       }
     };
     browser.runtime.onMessage.addListener(listener);
+    window.dispatchEvent(new Event(FLOATING_PANEL_READY_EVENT));
     window.addEventListener("chat-graph-location-change", refreshForLocationChange);
     return () => {
       browser.runtime.onMessage.removeListener(listener);
@@ -342,20 +341,18 @@ export function FloatingNavigationPanel() {
   }, [notice]);
 
   useEffect(() => {
-    if (!confirmingNavigationTarget && !pendingNavigationTarget) return;
+    if (!confirmingNavigationTarget) return;
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || navigationBusy) return;
       setConfirmingNavigationTarget(undefined);
-      setPendingNavigationTarget(undefined);
     };
     window.addEventListener("keydown", dismissOnEscape);
     return () => window.removeEventListener("keydown", dismissOnEscape);
-  }, [confirmingNavigationTarget, navigationBusy, pendingNavigationTarget]);
+  }, [confirmingNavigationTarget, navigationBusy]);
 
   function dismissNavigationLayer() {
     if (navigationBusy) return;
     setConfirmingNavigationTarget(undefined);
-    setPendingNavigationTarget(undefined);
   }
 
   useEffect(() => {
@@ -614,7 +611,6 @@ export function FloatingNavigationPanel() {
     clearGraphSelection();
     setEditingParent(false);
     setConfirmingNavigationTarget(undefined);
-    setPendingNavigationTarget(undefined);
     closeProjectMenu();
     setDismissed(true);
   }
@@ -674,31 +670,21 @@ export function FloatingNavigationPanel() {
     return Boolean(result);
   }
 
-  async function navigateQuestionTarget(
-    target: NavigationTarget,
-    openMode?: ConversationOpenMode,
-  ): Promise<boolean> {
+  async function navigateQuestionTarget(target: NavigationTarget): Promise<boolean> {
     setError(undefined);
     setNavigationBusy(true);
     try {
       const response = await browser.runtime.sendMessage({
         type: "NAVIGATE_TO_QUESTION",
         source: { kind: target.kind, id: target.id },
-        ...(openMode ? { openMode } : {}),
       } satisfies ExtensionMessage) as NavigateToNodeResponse;
       if (!response.ok) {
-        if (response.status === "open_choice_required") {
-          setPendingNavigationTarget(target);
-          return true;
-        }
-        setPendingNavigationTarget(undefined);
         setError(response.error);
         return false;
       }
-      setPendingNavigationTarget(undefined);
       return true;
     } catch {
-      setError("暂时无法打开原会话，请重试。");
+      setError("暂时无法在当前页面定位原问题，请重试。");
       return false;
     } finally {
       setNavigationBusy(false);
@@ -1560,7 +1546,7 @@ export function FloatingNavigationPanel() {
           <section role="dialog" aria-modal="true" aria-labelledby="chat-graph-locate-title">
             <h3 id="chat-graph-locate-title">定位到原问题？</h3>
             <p title={confirmingNavigationTarget.question}>{confirmingNavigationTarget.question}</p>
-            <small>插件会打开对应会话，并定位、高亮这条问题。</small>
+            <small>插件会在当前 ChatGPT 页面查找并高亮这条问题。</small>
             <div>
               <button type="button" disabled={navigationBusy} onClick={() => setConfirmingNavigationTarget(undefined)}>取消</button>
               <button
@@ -1574,28 +1560,6 @@ export function FloatingNavigationPanel() {
                 }}
               >
                 {navigationBusy ? "正在定位…" : "定位到原问题"}
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
-      {pendingNavigationTarget ? (
-        <div
-          className="chat-graph-navigation-layer"
-          role="presentation"
-          onPointerDown={(event) => {
-            if (event.target === event.currentTarget) dismissNavigationLayer();
-          }}
-        >
-          <section role="dialog" aria-modal="true" aria-labelledby="chat-graph-navigation-title">
-            <h3 id="chat-graph-navigation-title">原会话尚未打开</h3>
-            <p title={pendingNavigationTarget.question}>{pendingNavigationTarget.question}</p>
-            <small>请选择打开方式，插件随后会继续定位原问题。</small>
-            <div>
-              <button type="button" disabled={navigationBusy} onClick={() => setPendingNavigationTarget(undefined)}>取消</button>
-              <button type="button" disabled={navigationBusy} onClick={() => void navigateQuestionTarget(pendingNavigationTarget, "current_tab")}>当前页打开</button>
-              <button className="is-primary" type="button" disabled={navigationBusy} onClick={() => void navigateQuestionTarget(pendingNavigationTarget, "new_tab")}>
-                {navigationBusy ? "正在打开…" : "新标签页打开"}
               </button>
             </div>
           </section>

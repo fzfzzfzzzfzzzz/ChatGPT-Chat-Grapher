@@ -6,7 +6,9 @@ import {
   getAIProviderProfile,
 } from "../ai/providers";
 import type { TestAIProviderResponse } from "../shared/messages";
+import type { BackupImportResult, BackupSummary } from "../db/backup";
 import type { AIProviderProfile, AISettings } from "../types/domain";
+import { DataBackupSection } from "./DataBackupSection";
 import { Modal } from "./Modal";
 
 type Props = {
@@ -14,6 +16,8 @@ type Props = {
   onSave: (ai: AISettings) => Promise<void>;
   onTest: (ai: AISettings) => Promise<TestAIProviderResponse>;
   onCheckPermission: (ai: AISettings) => Promise<boolean>;
+  onExportData: () => Promise<BackupSummary>;
+  onImportData: (file: File) => Promise<BackupImportResult>;
   onClose: () => void;
 };
 
@@ -23,7 +27,15 @@ type TestState =
   | { status: "success"; message: string }
   | { status: "error"; message: string };
 
-export function SettingsModal({ ai, onSave, onTest, onCheckPermission, onClose }: Props) {
+export function SettingsModal({
+  ai,
+  onSave,
+  onTest,
+  onCheckPermission,
+  onExportData,
+  onImportData,
+  onClose,
+}: Props) {
   const [draft, setDraft] = useState(ai);
   const [saving, setSaving] = useState(false);
   const [testState, setTestState] = useState<TestState>({ status: "idle" });
@@ -93,11 +105,17 @@ export function SettingsModal({ ai, onSave, onTest, onCheckPermission, onClose }
 
   return (
     <Modal
-      title="父节点推荐设置"
-      description="AI 只接收新问题、简短摘要和有限候选节点；API Key 仅保存在本机。"
+      title="设置"
+      description="管理 AI 父节点推荐与本地数据备份。"
       onClose={onClose}
     >
       <form className="form-stack" onSubmit={(event) => void submit(event)}>
+        <div className="settings-section__header">
+          <div>
+            <h3>AI 父节点推荐</h3>
+            <p>API Key 仅保存在本机，请求直接发送到所选厂商。</p>
+          </div>
+        </div>
         <label className="check-row">
           <input
             type="checkbox"
@@ -222,6 +240,7 @@ export function SettingsModal({ ai, onSave, onTest, onCheckPermission, onClose }
             <CircleAlert size={14} /> <span>{testState.message}</span>
           </div>
         ) : null}
+        <DataBackupSection onExport={onExportData} onImport={onImportData} />
         <div className="form-actions">
           <button className="button" type="button" onClick={onClose}>取消</button>
           <button className="button button--primary" type="submit" disabled={saving || testState.status === "testing"}>

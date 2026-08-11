@@ -1,6 +1,6 @@
 # Chat Graph — Roadmap
 
-> 文档版本：2026-08 · 当前产品版本：v0.9.0
+> 文档版本：2026-08 · 当前产品版本：v0.12.0
 
 ## 产品定位
 
@@ -71,8 +71,8 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 - Parent 问题点击用于展开摘要；“查看父节点”只切换浮窗详情，不修改 discussion focus
 - ChatGPT SPA 路由切换后按 chatId 重载 Current / Parent，空 Chat 不残留上一段会话状态
 - 支持浅色 / 深色、长文本截断、键盘焦点和减弱动画偏好
-- Graph 与浮窗图谱首次单击设为 Current，再次单击确认定位原问题；右键只更新节点状态。跨会话时优先复用已有标签页，未打开时由用户选择打开方式
-- 侧栏提供当前项目 Question Node 搜索，仅索引 question / summary 并复用跨会话定位流程
+- Graph 与浮窗图谱首次单击设为 Current，再次单击确认定位当前页面中的原问题；右键只更新节点状态
+- 侧栏提供当前项目 Question Node 搜索，仅索引 question / summary；跨页面定位留待后续版本
 
 默认工作态明确不包含：Open Branches、Status、完整 Current Path、Full Graph、Inbox 或 Search。
 
@@ -106,6 +106,13 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 - 捕获暂停状态压缩为单行提示，当前交互操作统一使用中文文案。
 - 浮窗数据操作统一经过后台命令层，并在成功响应中直接携带最新状态；候选问题也可定位原消息。
 
+### v0.12.0 — Local JSON Backup
+
+- 将全部项目、问题节点、待讨论候选和撤销事件导出为带 schema 版本的 JSON。
+- 导入时校验文件与图关系，重映射内部 ID，并以新项目副本写入单个 IndexedDB 事务。
+- 备份不包含 AI 设置或 API Key，重复导入不会覆盖现有项目。
+- 增加 GitHub Bug Report 和 Feature Request Issue 表单。
+
 ## 后续优先级
 
 ### v0.7 候选
@@ -114,7 +121,6 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 2. 只作为 Candidate 的 Branch Suggestion（用户采用后才建正式 Node）
 3. 多 Chat / Project 聚合与导航可靠性
 4. 轻量 Context Packet
-5. v0.5 结构数据导入 / 导出
 
 ### 暂不优先
 

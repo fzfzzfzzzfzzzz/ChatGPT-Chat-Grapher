@@ -302,6 +302,13 @@ input[readonly] { color: #64748b; background: #f8fafc; cursor: default; }
 .form-actions--between > div { display: flex; gap: 7px; }
 .check-row { display: flex !important; grid-template-columns: auto 1fr; align-items: center; gap: 7px !important; }
 .check-row input { width: auto; }
+.settings-section { display: grid; gap: 9px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+.settings-section__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.settings-section__header h3 { margin: 0; color: #172033; font-size: 11px; }
+.settings-section__header p { margin: 3px 0 0; color: #64748b; font-size: 9px; line-height: 1.45; }
+.data-backup-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.data-backup-actions .button { justify-content: center; }
+.data-backup-note { margin: 0; color: #64748b; font-size: 9px; line-height: 1.45; }
 .provider-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid #dbeafe; border-radius: 10px; background: #eff6ff; }
 .provider-card > div { display: grid; gap: 2px; }
 .provider-card strong, .provider-test-row strong { color: #172033; font-size: 11px; }

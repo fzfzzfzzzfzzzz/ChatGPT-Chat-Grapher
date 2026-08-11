@@ -7,7 +7,11 @@
 
 Chat Graph is a local-first Chrome and Firefox extension that turns the questions in long ChatGPT conversations into a navigable question tree or forest. It keeps the current question, its logical parent, unfinished branches, and the original message location within reach without creating a second copy of the conversation.
 
-The current release is **v0.9.0 - Multi-provider AI API**.
+The current release is **v0.12.0 - Local JSON Backup**.
+
+## Floating panel preview
+
+![Chat Graph floating graph view inside ChatGPT](release-assets/v0.12.0/screenshots/04-floating-panel-in-chatgpt.png)
 
 ## What it does
 
@@ -16,9 +20,10 @@ The current release is **v0.9.0 - Multi-provider AI API**.
 - Builds a question graph from selected messages or from all user questions in the current conversation.
 - Opens the full graph in the Chrome Side Panel or Firefox Sidebar.
 - Searches questions and summaries across conversations in the current project.
-- Jumps from a graph node back to its original ChatGPT message.
+- Jumps from a graph node back to its original message when that conversation is open on the current ChatGPT page.
 - Tracks pending and resolved questions, supports multiple roots, and protects against parent cycles.
 - Persists projects and graph state locally with Dexie and IndexedDB.
+- Exports all project graphs to a versioned JSON backup and imports backups as non-destructive project copies.
 - Optionally uses an AI provider to summarize questions and recommend logical parent nodes.
 
 Chat Graph stores discussion structure, not a second chat history. Node content is intentionally limited to `question`, `summary`, and `status`; Assistant responses are not stored.
@@ -27,11 +32,11 @@ Chat Graph stores discussion structure, not a second chat history. Node content 
 
 ### Chrome
 
-1. Download `chatgpt-discussion-map-0.9.0-chrome.zip` from the [latest release](https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher/releases/latest).
+1. Download `chatgpt-discussion-map-0.12.0-chrome.zip` from the [latest release](https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher/releases/latest).
 2. Extract the ZIP to a folder you plan to keep.
 3. Open `chrome://extensions/` and enable **Developer mode**.
 4. Select **Load unpacked** and choose the extracted folder.
-5. Open or refresh [ChatGPT](https://chatgpt.com/).
+5. Open [ChatGPT](https://chatgpt.com/). If it was already open, use **Open page panel** from the side panel; no refresh is required.
 
 Chrome does not automatically update manually loaded extensions. For a future release, replace the extracted files, click **Reload** on the extension card, and refresh the ChatGPT tab.
 
@@ -51,7 +56,8 @@ Open ChatGPT after installing the extension. The floating panel appears on the p
 - Submit a question normally, select one existing question from the page, or import all user questions from the current conversation.
 - Switch between the current-question view and the project graph.
 - Use the extension toolbar icon to open the full graph. Firefox also supports `Alt+Shift+G`.
-- Open a node menu to inspect it, change its parent or status, locate the original message, or delete it.
+- Open a node menu to inspect it, change its parent or status, locate the original message on the current page, or delete it.
+- New nodes default to pending; adding children, changing parents, and bulk graph creation never complete nodes automatically. Status changes are manual.
 
 AI is optional. Without an AI provider, captured questions remain available for manual parent selection.
 
@@ -63,7 +69,7 @@ API credentials are stored in extension-local storage. Requests go directly from
 
 ## Data and privacy
 
-Projects, question nodes, relationships, statuses, message locators, and current focus are stored in the extension's local IndexedDB database. Settings, panel preferences, and API credentials are stored in extension-local storage. There is no account system, analytics service, project server, or cloud synchronization.
+Projects, question nodes, relationships, statuses, message locators, and current focus are stored in the extension's local IndexedDB database. Settings, panel preferences, and API credentials are stored in extension-local storage. JSON backups contain graph data and message locators, but never AI settings or API keys. There is no account system, analytics service, project server, or cloud synchronization.
 
 Uninstalling the extension or clearing its site/extension data deletes the local graph. Read the full [Privacy Policy](PRIVACY.md) before enabling an AI provider.
 

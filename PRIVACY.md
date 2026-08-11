@@ -40,6 +40,8 @@ The extension stores the following information in browser extension-local storag
 
 This data is local to the browser profile and is not synchronized through a Chat Graph service. API keys are not separately encrypted by Chat Graph; they receive the protection provided by the browser's extension storage and the local operating-system account.
 
+When the user selects **Export JSON**, Chat Graph creates a local backup containing the IndexedDB project and graph data listed above. The backup does not contain AI settings or API keys. Import reads the selected file locally and creates new project copies without uploading the file or overwriting existing projects. The user controls where exported files are stored and shared.
+
 ## Optional AI requests
 
 AI assistance is disabled unless the user configures and enables it. When enabled, Chat Graph sends a request directly from the browser to the provider selected by the user. Supported destinations include Alibaba Cloud Bailian, OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, and a user-specified OpenAI-compatible HTTPS endpoint.
@@ -73,7 +75,7 @@ Chat Graph does not sell personal information. It does not send project data to 
 
 ## Retention and deletion
 
-Local data remains until the user deletes a node or project, clears the extension's data in the browser, or uninstalls the extension. Clearing an API key from the settings removes the saved credential. Uninstalling the extension or clearing its storage can permanently remove the local graph because Chat Graph currently has no cloud backup or synchronization service.
+Local data remains until the user deletes a node or project, clears the extension's data in the browser, or uninstalls the extension. Clearing an API key from the settings removes the saved credential. Uninstalling the extension or clearing its storage can permanently remove the local graph unless the user has created a JSON backup. Exported backup files remain wherever the user saved them and must be deleted separately.
 
 Deletion from Chat Graph does not delete information already submitted to ChatGPT or an external AI provider. Those services control their own retention.
 

@@ -1,0 +1,70 @@
+name: Feature request
+description: Propose a focused improvement to discussion navigation.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Chat Graph stays focused on question structure, branch navigation, and returning to original ChatGPT messages.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the concrete workflow problem before describing a solution.
+      placeholder: When I work across several ChatGPT conversations, I cannot...
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should become easier or more reliable?
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Example workflow
+      description: Show where this capability would appear in an actual Chat Graph session.
+      placeholder: |
+        1. The user...
+        2. Chat Graph...
+        3. The user can then...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Product area
+      options:
+        - Question capture
+        - Parent and branch management
+        - Graph navigation
+        - Original-message location
+        - Local data and backup
+        - AI provider integration
+        - Browser compatibility
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Local-first and privacy impact
+      description: Note whether the proposal stores new data, sends data externally, or requires browser permissions.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workaround or simpler approach you have tried.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: This request directly supports discussion navigation or question-graph management.
+          required: true
+        - label: I searched existing issues for a similar request.
+          required: true

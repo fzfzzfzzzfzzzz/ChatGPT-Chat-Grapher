@@ -15,17 +15,24 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CurrentParentPanel } from "../../components/CurrentParentPanel";
 import { EmptyState } from "../../components/EmptyState";
 import { InboxPanel } from "../../components/InboxPanel";
-import { OpenConversationDialog } from "../../components/OpenConversationDialog";
 import { ProjectDialog } from "../../components/ProjectDialog";
 import { ProjectHeader } from "../../components/ProjectHeader";
 import { ProjectSearchPanel } from "../../components/ProjectSearchPanel";
 import { QuestionDetailDialog } from "../../components/QuestionDetailDialog";
 import { SettingsModal } from "../../components/SettingsModal";
 import { SidePanelLayout } from "../../components/SidePanelLayout";
-import { StatusPill } from "../../components/StatusPill";
+import {
+  MAX_BACKUP_FILE_BYTES,
+  createDiscussionBackup,
+  importDiscussionBackup,
+  parseDiscussionBackupJson,
+  stringifyDiscussionBackup,
+  type BackupImportResult,
+  type BackupSummary,
+} from "../../db/backup";
 import { db } from "../../db/database";
 import { DiscussionService } from "../../graph/discussionService";
-import { getCurrentPath, getOpenBranches } from "../../graph/questionTree";
+import { getCurrentPath } from "../../graph/questionTree";
 import { openFloatingPanelInActiveTab } from "../../platform/floatingPanel";
 import {
   hasActiveProviderPermission,
@@ -37,7 +44,6 @@ import {
   saveAISettings,
 } from "../../settings/storage";
 import type {
-  ConversationOpenMode,
   ExtensionMessage,
   NavigateToNodeResponse,
   TestAIProviderResponse,
@@ -49,7 +55,6 @@ import {
 } from "../../ai/providers";
 import type {
   AISettings,
-  NodeStatus,
   Project,
   QuestionCandidate,
   QuestionNode,
@@ -93,7 +98,6 @@ export default function App() {
   const [aiSettings, setAISettings] = useState<AISettings>(DEFAULT_AI_SETTINGS);
   const [error, setError] = useState<string>();
   const [confirmingNavigationNode, setConfirmingNavigationNode] = useState<QuestionNode>();
-  const [pendingNavigationNode, setPendingNavigationNode] = useState<QuestionNode>();
   const [navigationBusy, setNavigationBusy] = useState(false);
   const selectionWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
@@ -150,7 +154,6 @@ export default function App() {
         setSelectedProjectId(nextProjectId);
         setDetailNodeId(undefined);
         setConfirmingNavigationNode(undefined);
-        setPendingNavigationNode(undefined);
         setView("focus");
       }
 
@@ -228,10 +231,7 @@ export default function App() {
     await announceChange();
   }
 
-  async function locateNode(
-    node: QuestionNode,
-    openMode?: ConversationOpenMode,
-  ): Promise<void> {
+  async function locateNode(node: QuestionNode): Promise<void> {
     setError(undefined);
     setNavigationBusy(true);
     try {
@@ -239,18 +239,10 @@ export default function App() {
       const response = await browser.runtime.sendMessage({
         type: "NAVIGATE_TO_NODE",
         nodeId: node.id,
-        ...(openMode ? { openMode } : {}),
         ...(tab?.id !== undefined ? { sourceTabId: tab.id } : {}),
       } satisfies ExtensionMessage) as NavigateToNodeResponse;
       if (!response.ok) {
-        if (response.status === "open_choice_required") {
-          setPendingNavigationNode(node);
-        } else {
-          setPendingNavigationNode(undefined);
-          setError(response.error);
-        }
-      } else {
-        setPendingNavigationNode(undefined);
+        setError(response.error);
       }
     } catch (actionError) {
       setError(messageFromError(actionError));
@@ -302,6 +294,32 @@ export default function App() {
     }
   }
 
+  async function exportData(): Promise<BackupSummary> {
+    const backup = await createDiscussionBackup(db, browser.runtime.getManifest().version);
+    if (!backup.data.projects.length) throw new Error("当前没有可导出的项目。");
+    downloadJsonFile(
+      `chat-graph-backup-${backup.exportedAt.slice(0, 10)}.json`,
+      stringifyDiscussionBackup(backup),
+    );
+    return {
+      projectCount: backup.data.projects.length,
+      nodeCount: backup.data.nodes.length,
+      candidateCount: backup.data.candidates.length,
+    };
+  }
+
+  async function importData(file: File): Promise<BackupImportResult> {
+    if (file.size > MAX_BACKUP_FILE_BYTES) {
+      throw new Error("备份文件不能超过 10 MB。");
+    }
+    const backup = parseDiscussionBackupJson(await file.text());
+    const result = await importDiscussionBackup(db, backup);
+    const firstProjectId = result.importedProjectIds[0];
+    if (firstProjectId) await selectProject(firstProjectId);
+    else await announceChange();
+    return result;
+  }
+
   const header = (
     <ProjectHeader
       projects={projects}
@@ -318,7 +336,7 @@ export default function App() {
   return (
     <SidePanelLayout
       header={header}
-      footer={<span>v0.9.0 · ChatGPT stores content; Chat Graph stores structure.</span>}
+      footer={<span>v{browser.runtime.getManifest().version} · ChatGPT stores content; Chat Graph stores structure.</span>}
     >
       {error ? (
         <div className="error-banner" role="alert">
@@ -477,6 +495,8 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onCheckPermission={hasActiveProviderPermission}
           onTest={testConfiguredProvider}
+          onExportData={exportData}
+          onImportData={importData}
           onSave={async (nextAI) => {
             const profile = getAIProviderProfile(nextAI.profiles, nextAI.activeProvider);
             if (profile.baseUrl.trim()) {
@@ -502,7 +522,7 @@ export default function App() {
       {confirmingNavigationNode ? (
         <ConfirmDialog
           title="定位到原问题？"
-          body={`将打开“${confirmingNavigationNode.question}”所在会话，并定位、高亮这条问题。`}
+          body={`将在当前 ChatGPT 页面查找“${confirmingNavigationNode.question}”，并定位、高亮这条问题。`}
           confirmLabel="定位到原问题"
           intent="primary"
           onClose={() => setConfirmingNavigationNode(undefined)}
@@ -514,14 +534,6 @@ export default function App() {
         />
       ) : null}
 
-      {pendingNavigationNode ? (
-        <OpenConversationDialog
-          question={pendingNavigationNode.question}
-          busy={navigationBusy}
-          onClose={() => setPendingNavigationNode(undefined)}
-          onChoose={(mode) => void locateNode(pendingNavigationNode, mode)}
-        />
-      ) : null}
     </SidePanelLayout>
   );
 }
@@ -539,4 +551,16 @@ function countDescendants(nodes: QuestionNode[], rootId: string): number {
     }
   }
   return ids.size - 1;
+}
+
+function downloadJsonFile(filename: string, contents: string): void {
+  const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }

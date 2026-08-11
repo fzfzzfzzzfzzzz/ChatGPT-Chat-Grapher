@@ -1,0 +1,83 @@
+name: Bug report
+description: Report a reproducible problem in Chat Graph.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Chat Graph. Remove API keys and private conversation content before submitting.
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version
+      description: Find this on the extension card or at the bottom of the side panel.
+      placeholder: v0.12.0
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome
+        - Firefox
+        - Chromium-based browser
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: browser-version
+    attributes:
+      label: Browser version
+      placeholder: Chrome 140.0.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - GitHub Release ZIP
+        - Local development build
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give the smallest sequence that consistently reproduces the problem.
+      placeholder: |
+        1. Open a ChatGPT conversation
+        2. Select a project
+        3. Click ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove prompts, responses, account information, and API keys. Drag files here if useful.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I reproduced this with the latest release or current main branch.
+          required: true
+        - label: I removed API keys and private conversation content.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true

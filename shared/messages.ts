@@ -91,6 +91,10 @@ export type PanelActionResponse =
   | { ok: true }
   | { ok: false; error: string };
 
+export type ContentScriptReadyResponse = {
+  ready: boolean;
+};
+
 export type TestAIProviderResponse =
   | { ok: true; providerId: AIProviderId; model: string }
   | { ok: false; error: string };
@@ -105,11 +109,8 @@ export type BuildCurrentPageGraphResponse =
     }
   | { ok: false; error: string };
 
-export type ConversationOpenMode = "new_tab" | "current_tab";
-
 export type NavigateToNodeStatus =
   | "located"
-  | "open_choice_required"
   | "conversation_unavailable"
   | "message_not_found"
   | "content_script_unavailable";
@@ -124,6 +125,7 @@ export type NavigateToNodeResponse =
 
 export type ExtensionMessage =
   | { type: "GET_FLOATING_PANEL_STATE"; chatId?: string; selectedNodeId?: string }
+  | { type: "PING_CHAT_GRAPH_CONTENT_SCRIPT" }
   | { type: "OPEN_FLOATING_PANEL" }
   | { type: "OPEN_SIDE_PANEL"; projectId?: string; view?: "graph" }
   | { type: "DISCUSSION_MAP_CHANGED" }
@@ -155,13 +157,11 @@ export type ExtensionMessage =
   | {
       type: "NAVIGATE_TO_NODE";
       nodeId: string;
-      openMode?: ConversationOpenMode;
       sourceTabId?: number;
     }
   | {
       type: "NAVIGATE_TO_QUESTION";
       source: PanelQuestionSource;
-      openMode?: ConversationOpenMode;
       sourceTabId?: number;
     }
   | { type: "FOCUS_PANEL_PARENT"; currentNodeId: string }

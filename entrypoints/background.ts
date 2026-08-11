@@ -3,7 +3,6 @@ import { defineBackground } from "wxt/utils/define-background";
 import { recommendParent, testAIProvider } from "../ai/client";
 import { isAIProviderId } from "../ai/providers";
 import {
-  conversationUrlForChat,
   getConversationId,
 } from "../adapters/chatgpt/getConversation";
 import { db } from "../db/database";
@@ -18,12 +17,10 @@ import {
 } from "../graph/floatingPanelState";
 import { getCurrentPath } from "../graph/questionTree";
 import { initializeSidebarBehavior, openDiscussionDetail } from "../platform/sidebar";
-import { selectExistingConversationTab } from "../platform/conversationNavigation";
 import { getAISettings } from "../settings/storage";
 import type {
   BuildCurrentPageGraphResponse,
   CaptureQuestionResponse,
-  ConversationOpenMode,
   ExtensionMessage,
   FloatingPanelState,
   LocateQuestionResponse,
@@ -334,7 +331,7 @@ async function navigateToNode(
 
 async function navigateToQuestion(
   source: PanelQuestionSource,
-  options: { openMode?: ConversationOpenMode; sourceTabId?: number },
+  options: { sourceTabId?: number },
   senderTabId?: number,
 ): Promise<NavigateToNodeResponse> {
   const question = source.kind === "node"
@@ -354,63 +351,22 @@ async function navigateToQuestion(
 
 async function navigateLocatableQuestion(
   question: LocatableQuestion,
-  options: { openMode?: ConversationOpenMode; sourceTabId?: number },
+  options: { sourceTabId?: number },
   senderTabId?: number,
 ): Promise<NavigateToNodeResponse> {
-
   const sourceTabId = options.sourceTabId ?? senderTabId;
-  const sourceTab = sourceTabId === undefined
-    ? undefined
-    : await browser.tabs.get(sourceTabId).catch(() => undefined);
-  const chatTabs = await browser.tabs.query({
-    url: ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-  });
-  let targetTab = selectExistingConversationTab(
-    chatTabs,
-    question.chatId,
-    sourceTab?.windowId,
-  );
-
-  if (!targetTab && !options.openMode) {
-    return {
-      ok: false,
-      status: "open_choice_required",
-      error: "目标会话尚未在浏览器中打开。",
-    };
-  }
-
-  let navigated = false;
-  if (!targetTab && options.openMode === "new_tab") {
-    targetTab = await browser.tabs.create({
-      url: conversationUrlForChat(question.chatId),
-      active: true,
-      ...(sourceTab?.windowId !== undefined ? { windowId: sourceTab.windowId } : {}),
-    });
-    navigated = true;
-  } else if (!targetTab && options.openMode === "current_tab") {
-    const fallbackTab = sourceTab ?? (await browser.tabs.query({
+  const targetTab = sourceTabId === undefined
+    ? (await browser.tabs.query({
       active: true,
       lastFocusedWindow: true,
-    }))[0];
-    if (fallbackTab?.id === undefined) {
-      return {
-        ok: false,
-        status: "conversation_unavailable",
-        error: "没有可用于打开原会话的标签页。",
-      };
-    }
-    targetTab = await browser.tabs.update(fallbackTab.id, {
-      url: conversationUrlForChat(question.chatId),
-      active: true,
-    });
-    navigated = true;
-  }
+    }))[0]
+    : await browser.tabs.get(sourceTabId).catch(() => undefined);
 
   if (targetTab?.id === undefined) {
     return {
       ok: false,
       status: "conversation_unavailable",
-      error: "无法打开原会话。",
+      error: "请先打开包含原问题的 ChatGPT 页面。",
     };
   }
 
@@ -418,14 +374,6 @@ async function navigateLocatableQuestion(
     await browser.windows.update(targetTab.windowId, { focused: true }).catch(() => undefined);
   }
   await browser.tabs.update(targetTab.id, { active: true }).catch(() => undefined);
-
-  if (navigated && !(await waitForConversationTab(targetTab.id, question.chatId))) {
-    return {
-      ok: false,
-      status: "conversation_unavailable",
-      error: "原会话不存在、已被删除，或当前账号无权访问。",
-    };
-  }
 
   return locateQuestionInTab(targetTab.id, question);
 }
@@ -483,43 +431,14 @@ async function locateQuestionInTab(
     return {
       ok: false,
       status: "conversation_unavailable",
-      error: "原会话不存在、已被删除，或当前账号无权访问。",
+      error: "当前 ChatGPT 页面没有找到对应问题。请先打开包含该问题的会话。",
     };
   }
   return {
     ok: false,
     status: "message_not_found",
-    error: "已打开原会话，但没有找到对应问题。",
+    error: "当前 ChatGPT 页面没有找到对应问题。",
   };
-}
-
-async function waitForConversationTab(
-  tabId: number,
-  chatId: string,
-  timeoutMs = 12_000,
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    let finished = false;
-    const finish = (result: boolean) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      browser.tabs.onUpdated.removeListener(listener);
-      resolve(result);
-    };
-    const inspect = async () => {
-      const tab = await browser.tabs.get(tabId).catch(() => undefined);
-      if (!tab) return finish(false);
-      if (tab.status !== "complete") return;
-      finish(Boolean(tab.url && getConversationId(tab.url) === chatId));
-    };
-    const listener = (updatedId: number) => {
-      if (updatedId === tabId) void inspect();
-    };
-    const timeout = setTimeout(() => finish(false), timeoutMs);
-    browser.tabs.onUpdated.addListener(listener);
-    void inspect();
-  });
 }
 
 function respondWithAction(

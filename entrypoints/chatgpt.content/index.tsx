@@ -4,13 +4,14 @@ import { createShadowRootUi } from "wxt/utils/content-script-ui/shadow-root";
 import { defineContentScript } from "wxt/utils/define-content-script";
 import {
   getLatestCapturedQuestion,
-  locateQuestionMessageWithHistory,
+  locateQuestionOnCurrentPage,
   watchForRefinedMessageLocator,
 } from "../../adapters/chatgpt/questionCapture";
 import { getConversationId } from "../../adapters/chatgpt/getConversation";
 import { CHATGPT_SELECTORS } from "../../adapters/chatgpt/selectors";
 import type {
   CaptureQuestionResponse,
+  ContentScriptReadyResponse,
   ExtensionMessage,
   LocateQuestionResponse,
 } from "../../shared/messages";
@@ -20,6 +21,7 @@ import {
   captureServiceEnabledFromStorage,
 } from "../../shared/captureService";
 import { FloatingNavigationPanel } from "./FloatingNavigationPanel";
+import { FLOATING_PANEL_READY_EVENT } from "./panelLifecycle";
 import "./style.css";
 
 export default defineContentScript({
@@ -28,6 +30,38 @@ export default defineContentScript({
   runAt: "document_idle",
 
   async main(ctx) {
+    let floatingPanelReady = false;
+    const handleFloatingPanelReady = () => {
+      floatingPanelReady = true;
+    };
+    const handleContentScriptMessage = (
+      rawMessage: unknown,
+      _sender: unknown,
+      sendResponse: (response?: unknown) => void,
+    ) => {
+      if (!isExtensionMessage(rawMessage)) return undefined;
+      if (rawMessage.type === "PING_CHAT_GRAPH_CONTENT_SCRIPT") {
+        sendResponse({ ready: floatingPanelReady } satisfies ContentScriptReadyResponse);
+        return undefined;
+      }
+      if (rawMessage.type === "LOCATE_QUESTION") {
+        const currentChatId = getConversationId(location.href);
+        void locateQuestionOnCurrentPage(rawMessage, currentChatId).then((response) => {
+          sendResponse(response satisfies LocateQuestionResponse);
+        }).catch(() => {
+          sendResponse({
+            ok: false,
+            code: "MESSAGE_NOT_FOUND",
+            error: "扫描当前页面时未能找到原问题。",
+          } satisfies LocateQuestionResponse);
+        });
+        return true;
+      }
+      return undefined;
+    };
+    window.addEventListener(FLOATING_PANEL_READY_EVENT, handleFloatingPanelReady);
+    browser.runtime.onMessage.addListener(handleContentScriptMessage);
+
     const ui = await createShadowRootUi(ctx, {
       name: "discussion-map-badge",
       position: "overlay",
@@ -152,52 +186,6 @@ export default defineContentScript({
     const observer = new MutationObserver(() => void tryCapture());
     observer.observe(document.body, { childList: true, subtree: true });
 
-    browser.runtime.onMessage.addListener((rawMessage: unknown, _sender, sendResponse) => {
-      if (!isExtensionMessage(rawMessage)) return undefined;
-      if (rawMessage.type === "LOCATE_QUESTION") {
-        const currentChatId = getConversationId(location.href);
-        if (currentChatId !== rawMessage.chatId) {
-          sendResponse({
-            ok: false,
-            code: "WRONG_CONVERSATION",
-            error: "当前页面不是目标会话。",
-          } satisfies LocateQuestionResponse);
-          return undefined;
-        }
-        if (!document.querySelector(CHATGPT_SELECTORS.userMessage)) {
-          sendResponse({
-            ok: false,
-            code: "CONVERSATION_UNAVAILABLE",
-            error: "页面没有加载到该会话内容。",
-          } satisfies LocateQuestionResponse);
-          return undefined;
-        }
-        void locateQuestionMessageWithHistory(
-          rawMessage.messageId,
-          rawMessage.messageAnchor,
-          rawMessage.messageLocator,
-        ).then((method) => {
-          sendResponse(
-            method
-              ? ({ ok: true, method } satisfies LocateQuestionResponse)
-              : ({
-                  ok: false,
-                  code: "MESSAGE_NOT_FOUND",
-                  error: "已扫描该会话的历史内容，但没有找到原问题。",
-                } satisfies LocateQuestionResponse),
-          );
-        }).catch(() => {
-          sendResponse({
-            ok: false,
-            code: "MESSAGE_NOT_FOUND",
-            error: "扫描历史消息时未能找到原问题。",
-          } satisfies LocateQuestionResponse);
-        });
-        return true;
-      }
-      return undefined;
-    });
-
     let previousUrl = location.href;
     ctx.setInterval(() => {
       if (location.href === previousUrl) {
@@ -222,6 +210,8 @@ export default defineContentScript({
       document.removeEventListener("click", handleClick, true);
       document.removeEventListener("submit", handleSubmit, true);
       browser.storage.onChanged.removeListener(handleStorageChanged);
+      browser.runtime.onMessage.removeListener(handleContentScriptMessage);
+      window.removeEventListener(FLOATING_PANEL_READY_EVENT, handleFloatingPanelReady);
     });
   },
 });

@@ -6,6 +6,7 @@ import {
   getCapturedQuestions,
   locateQuestionMessage,
   locateQuestionMessageWithHistory,
+  locateQuestionOnCurrentPage,
 } from "../adapters/chatgpt/questionCapture";
 import type { MessageLocator } from "../types/domain";
 
@@ -94,6 +95,23 @@ describe("locateQuestionMessage", () => {
       locator({ messageId: "placeholder-request-1" }),
       root,
     )).toBe("anchor");
+  });
+
+  it("locates a visible root question before rejecting a stale conversation id", async () => {
+    const { root, messages } = fixture(["Root question"], ["root-message"]);
+    const response = await locateQuestionOnCurrentPage({
+      chatId: "stale-chat-id",
+      messageId: "root-message",
+      messageLocator: {
+        version: 1,
+        ordinal: 0,
+        fingerprint: fingerprintMessageText("Root question"),
+        messageId: "root-message",
+      },
+    }, "current-chat-id", root);
+
+    expect(response).toEqual({ ok: true, method: "messageId" });
+    expect(messages[0]?.container.scrollIntoView).toHaveBeenCalled();
   });
 
   it("scans virtualized history and leaves the view at the located old question", async () => {
