@@ -4,6 +4,10 @@ import { getConversationMetaFromPage } from "./getConversation";
 import { CHATGPT_SELECTORS } from "./selectors";
 
 const TURN_CONTAINER_SELECTOR = "section[data-turn-id], article";
+const HISTORY_SCAN_DELAY_MS = 100;
+const HISTORY_SCAN_MAX_STEPS = 120;
+const HISTORY_SCAN_STALL_LIMIT = 3;
+
 export function getLatestCapturedQuestion(root: ParentNode = document): CapturedQuestion | undefined {
   return getCapturedQuestions(root).at(-1);
 }
@@ -28,6 +32,62 @@ export function getCapturedQuestions(root: ParentNode = document): CapturedQuest
       ...(meta.conversationTitle ? { conversationTitle: meta.conversationTitle } : {}),
     }];
   });
+}
+
+export async function getAllCapturedQuestions(
+  root: ParentNode = document,
+): Promise<CapturedQuestion[]> {
+  let collected = getCapturedQuestions(root);
+  if (!collected.length || typeof window === "undefined") return collected;
+
+  const scrollContainer = findConversationScrollContainer(root);
+  if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight + 1) {
+    return collected;
+  }
+
+  const originalScrollTop = scrollContainer.scrollTop;
+  const originalScrollableHeight = Math.max(
+    1,
+    scrollContainer.scrollHeight - scrollContainer.clientHeight,
+  );
+  const originalScrollRatio = originalScrollTop / originalScrollableHeight;
+  const wasNearBottom = originalScrollableHeight - originalScrollTop < 120;
+  const seen = new Set(collected.map(capturedQuestionIdentity));
+  let stalledSteps = 0;
+
+  try {
+    for (let step = 0; step < HISTORY_SCAN_MAX_STEPS; step += 1) {
+      const beforeTop = scrollContainer.scrollTop;
+      const distance = Math.max(480, Math.floor(scrollContainer.clientHeight * 0.8));
+      scrollContainer.scrollTop = Math.max(0, beforeTop - distance);
+      await waitForHistoryRender();
+
+      const currentWindow = getCapturedQuestions(root);
+      const unseen = currentWindow.filter((question) => {
+        const identity = capturedQuestionIdentity(question);
+        if (seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      });
+      if (unseen.length) collected = [...unseen, ...collected];
+
+      const afterTop = scrollContainer.scrollTop;
+      const didNotMove = Math.abs(afterTop - beforeTop) < 1;
+      if (!unseen.length && (didNotMove || afterTop <= 1)) stalledSteps += 1;
+      else stalledSteps = 0;
+      if (stalledSteps >= HISTORY_SCAN_STALL_LIMIT) break;
+    }
+  } finally {
+    const scrollableHeight = Math.max(
+      0,
+      scrollContainer.scrollHeight - scrollContainer.clientHeight,
+    );
+    scrollContainer.scrollTop = wasNearBottom
+      ? scrollableHeight
+      : Math.round(scrollableHeight * originalScrollRatio);
+  }
+
+  return reindexCapturedQuestions(collected);
 }
 
 export function locateQuestionMessage(
@@ -61,6 +121,86 @@ export function locateQuestionMessage(
     fingerprintMessageText(normalizeMessageText(element.innerText)) === anchor.fingerprint
   );
   return target ? revealQuestionMessage(target, "anchor") : undefined;
+}
+
+export async function locateQuestionMessageWithHistory(
+  messageId: string,
+  messageAnchor?: string,
+  messageLocator?: MessageLocator,
+  root: ParentNode = document,
+): Promise<LocateQuestionMethod | undefined> {
+  const immediate = locateQuestionMessage(messageId, messageAnchor, messageLocator, root) ??
+    locateQuestionByFingerprint(messageAnchor, messageLocator, root);
+  if (immediate) return immediate;
+  if (typeof window === "undefined") return undefined;
+
+  const scrollContainer = findConversationScrollContainer(root);
+  if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight + 1) {
+    return undefined;
+  }
+
+  const originalScrollTop = scrollContainer.scrollTop;
+  const originalScrollableHeight = Math.max(
+    1,
+    scrollContainer.scrollHeight - scrollContainer.clientHeight,
+  );
+  const originalScrollRatio = originalScrollTop / originalScrollableHeight;
+  let located: LocateQuestionMethod | undefined;
+
+  const scan = async (direction: -1 | 1) => {
+    let stalledSteps = 0;
+    for (let step = 0; step < HISTORY_SCAN_MAX_STEPS; step += 1) {
+      const beforeTop = scrollContainer.scrollTop;
+      const distance = Math.max(480, Math.floor(scrollContainer.clientHeight * 0.8));
+      const scrollableHeight = Math.max(
+        0,
+        scrollContainer.scrollHeight - scrollContainer.clientHeight,
+      );
+      scrollContainer.scrollTop = Math.min(
+        scrollableHeight,
+        Math.max(0, beforeTop + direction * distance),
+      );
+      await waitForHistoryRender();
+
+      located = locateQuestionMessage(messageId, messageAnchor, messageLocator, root) ??
+        locateQuestionByFingerprint(messageAnchor, messageLocator, root);
+      if (located) return;
+
+      const afterTop = scrollContainer.scrollTop;
+      const latestScrollableHeight = Math.max(
+        0,
+        scrollContainer.scrollHeight - scrollContainer.clientHeight,
+      );
+      const atBoundary = direction < 0
+        ? afterTop <= 1
+        : latestScrollableHeight - afterTop <= 1;
+      if (Math.abs(afterTop - beforeTop) < 1 || atBoundary) stalledSteps += 1;
+      else stalledSteps = 0;
+      if (stalledSteps >= HISTORY_SCAN_STALL_LIMIT) return;
+    }
+  };
+
+  try {
+    await scan(-1);
+    if (!located) {
+      const scrollableHeight = Math.max(
+        0,
+        scrollContainer.scrollHeight - scrollContainer.clientHeight,
+      );
+      scrollContainer.scrollTop = Math.round(scrollableHeight * originalScrollRatio);
+      await waitForHistoryRender();
+      await scan(1);
+    }
+    return located;
+  } finally {
+    if (!located) {
+      const scrollableHeight = Math.max(
+        0,
+        scrollContainer.scrollHeight - scrollContainer.clientHeight,
+      );
+      scrollContainer.scrollTop = Math.round(scrollableHeight * originalScrollRatio);
+    }
+  }
 }
 
 export function watchForRefinedMessageLocator(
@@ -143,6 +283,58 @@ function getUserMessages(root: ParentNode): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(CHATGPT_SELECTORS.userMessage));
 }
 
+function findConversationScrollContainer(root: ParentNode): Element | undefined {
+  const latestMessage = getUserMessages(root).at(-1);
+  if (!latestMessage) return undefined;
+  let current = latestMessage.parentElement;
+  while (current) {
+    const overflowY = typeof getComputedStyle === "function"
+      ? getComputedStyle(current).overflowY
+      : "";
+    if (
+      (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+      current.scrollHeight > current.clientHeight + 1
+    ) return current;
+    current = current.parentElement;
+  }
+  if (root === document) return document.scrollingElement ?? undefined;
+  return undefined;
+}
+
+function capturedQuestionIdentity(captured: CapturedQuestion): string {
+  const messageId = stableMessageId(captured.messageLocator?.messageId) ??
+    stableMessageId(captured.messageId);
+  if (messageId) return `message:${messageId}`;
+  if (captured.messageLocator?.turnId) return `turn:${captured.messageLocator.turnId}`;
+  return `fallback:${fingerprintMessageText(captured.question)}`;
+}
+
+function reindexCapturedQuestions(questions: CapturedQuestion[]): CapturedQuestion[] {
+  return questions.map((captured, ordinal) => {
+    const fingerprint = fingerprintMessageText(captured.question);
+    const messageAnchor = `user:${ordinal}:${fingerprint}`;
+    const messageLocator: MessageLocator = {
+      version: 1,
+      ordinal,
+      fingerprint,
+      ...(captured.messageLocator?.messageId
+        ? { messageId: captured.messageLocator.messageId }
+        : {}),
+      ...(captured.messageLocator?.turnId ? { turnId: captured.messageLocator.turnId } : {}),
+    };
+    return {
+      ...captured,
+      messageId: messageLocator.messageId || messageLocator.turnId || messageAnchor,
+      messageAnchor,
+      messageLocator,
+    };
+  });
+}
+
+function waitForHistoryRender(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, HISTORY_SCAN_DELAY_MS));
+}
+
 function getTurnContainer(element: HTMLElement): HTMLElement | undefined {
   return element.closest<HTMLElement>(TURN_CONTAINER_SELECTOR) ??
     element.closest<HTMLElement>("[data-message-id]") ??
@@ -172,6 +364,19 @@ function findAnchoredUserMessage(
     index === ordinal &&
     fingerprintMessageText(normalizeMessageText(element.innerText)) === fingerprint
   );
+}
+
+function locateQuestionByFingerprint(
+  messageAnchor: string | undefined,
+  messageLocator: MessageLocator | undefined,
+  root: ParentNode,
+): LocateQuestionMethod | undefined {
+  const anchor = locatorAnchor(messageLocator, messageAnchor);
+  if (!anchor) return undefined;
+  const target = getUserMessages(root).find((element) =>
+    fingerprintMessageText(normalizeMessageText(element.innerText)) === anchor.fingerprint
+  );
+  return target ? revealQuestionMessage(target, "anchor") : undefined;
 }
 
 function locatorAnchor(

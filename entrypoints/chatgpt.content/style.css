@@ -1066,7 +1066,7 @@
 }
 
 .chat-graph-section--current {
-  margin: 0 12px;
+  margin: 0 12px 12px;
   padding: 12px;
   border: 1px solid rgba(15, 118, 110, 0.12);
   border-radius: 12px;

@@ -2,7 +2,7 @@
 
 Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保存第二份聊天内容，而是自动捕获用户实际发送的问题，维护 Question Tree / Forest，并帮助用户随时看见当前路径、未完成分支和原始消息位置。
 
-当前代码对应 **v0.8.0 — One-click Page Graph**。
+当前代码对应 **v0.8.1 — Virtualized History Navigation**。
 
 ## 当前能力
 
@@ -25,6 +25,7 @@ Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保
 - Node 可跳回对应 Chat，并尽量滚动/高亮原始用户消息
 - 跨会话跳转会优先复用已打开的 ChatGPT 标签页；未打开时由用户选择新标签页或当前页
 - Graph 节点首次单击设为 Current，再次单击可确认定位原问题；右键可查看详情、标记状态或删除。侧栏搜索可检索当前项目内的 question / summary 并跨会话定位
+- 对 ChatGPT 虚拟化历史进行滚动扫描，可捕获和定位当前未挂载在 DOM 中的旧问题
 - Dexie + IndexedDB 本地持久化；刷新和重启后恢复 Graph、status 与 focus
 - 旧 v0.4 Branch 数据在首次打开时迁移为 v0.5 Question Node
 

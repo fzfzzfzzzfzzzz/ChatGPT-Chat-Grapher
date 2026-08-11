@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   fingerprintMessageText,
+  getAllCapturedQuestions,
   getCapturedQuestions,
   locateQuestionMessage,
+  locateQuestionMessageWithHistory,
 } from "../adapters/chatgpt/questionCapture";
 import type { MessageLocator } from "../types/domain";
 
@@ -93,6 +95,78 @@ describe("locateQuestionMessage", () => {
     )).toBe("anchor");
   });
 
+  it("scans virtualized history and leaves the view at the located old question", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { href: "https://chatgpt.com/c/chat-virtual" });
+    vi.stubGlobal("document", { title: "Virtualized discussion | ChatGPT" });
+    let virtualScrollTop = 1600;
+    const scrollContainer = {
+      scrollHeight: 2000,
+      clientHeight: 400,
+      parentElement: null,
+      get scrollTop() { return virtualScrollTop; },
+      set scrollTop(value: number) { virtualScrollTop = Math.max(0, Math.min(1600, value)); },
+    } as unknown as Element;
+    const containers: HTMLElement[] = [];
+    const messages = ["First", "Second", "Third", "Latest"].map((text, index) => {
+      const container = {
+        dataset: { turnId: `turn-${index}` },
+        getAttribute: (name: string) => name === "data-turn-id" ? `turn-${index}` : null,
+        querySelector: () => message,
+        scrollIntoView: vi.fn(),
+        animate: vi.fn(),
+      } as unknown as HTMLElement;
+      containers.push(container);
+      const message = {
+        dataset: { messageId: `message-${index}` },
+        innerText: text,
+        parentElement: scrollContainer,
+        getAttribute: (name: string) => name === "data-message-id" ? `message-${index}` : null,
+        matches: (selector: string) => selector === '[data-message-author-role="user"]',
+        closest: (selector: string) => selector.includes("section") ? container : null,
+      } as unknown as HTMLElement;
+      return message;
+    });
+    const currentMessages = () => {
+      if (virtualScrollTop > 1000) return messages.slice(2);
+      if (virtualScrollTop > 300) return messages.slice(1, 3);
+      return messages.slice(0, 2);
+    };
+    const root = {
+      querySelectorAll: (selector: string) => {
+        if (selector === '[data-message-author-role="user"]') return currentMessages();
+        if (selector === "[data-message-id]") return currentMessages();
+        if (selector === "[data-turn-id]") {
+          return currentMessages().map((message) =>
+            containers[Number(message.dataset.messageId?.split("-")[1])]
+          );
+        }
+        return [];
+      },
+    } as unknown as ParentNode;
+    vi.stubGlobal("window", { setTimeout });
+    vi.stubGlobal("getComputedStyle", () => ({ overflowY: "auto" }));
+
+    const pending = locateQuestionMessageWithHistory(
+      "message-0",
+      `user:0:${fingerprintMessageText("First")}`,
+      {
+        version: 1,
+        messageId: "message-0",
+        turnId: "turn-0",
+        ordinal: 0,
+        fingerprint: fingerprintMessageText("First"),
+      },
+      root,
+    );
+    await vi.runAllTimersAsync();
+
+    expect(await pending).toBe("messageId");
+    expect(virtualScrollTop).toBeLessThanOrEqual(300);
+    expect(containers[0]?.scrollIntoView).toHaveBeenCalled();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("getCapturedQuestions", () => {
@@ -133,4 +207,55 @@ describe("getCapturedQuestions", () => {
     vi.unstubAllGlobals();
   });
 
+  it("collects virtualized history in order and restores the scroll position", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { href: "https://chatgpt.com/c/chat-virtual" });
+    vi.stubGlobal("document", { title: "Virtualized discussion | ChatGPT" });
+    let virtualScrollTop = 1600;
+    const scrollContainer = {
+      scrollHeight: 2000,
+      clientHeight: 400,
+      parentElement: null,
+      get scrollTop() { return virtualScrollTop; },
+      set scrollTop(value: number) { virtualScrollTop = Math.max(0, Math.min(1600, value)); },
+    } as unknown as Element;
+    const messages = ["First", "Second", "Third", "Latest"].map((text, index) => {
+      const container = {
+        dataset: { turnId: `turn-${index}` },
+        querySelector: () => message,
+      } as unknown as HTMLElement;
+      const message = {
+        dataset: {},
+        innerText: text,
+        parentElement: scrollContainer,
+        closest: (selector: string) => selector.includes("section") ? container : null,
+      } as unknown as HTMLElement;
+      return message;
+    });
+    const root = {
+      querySelectorAll: (selector: string) => {
+        if (selector !== '[data-message-author-role="user"]') return [];
+        if (virtualScrollTop > 1000) return messages.slice(2);
+        if (virtualScrollTop > 300) return messages.slice(1, 3);
+        return messages.slice(0, 2);
+      },
+    } as unknown as ParentNode;
+    vi.stubGlobal("window", { setTimeout });
+    vi.stubGlobal("getComputedStyle", () => ({ overflowY: "auto" }));
+
+    const pending = getAllCapturedQuestions(root);
+    await vi.runAllTimersAsync();
+    const captured = await pending;
+
+    expect(captured.map((item) => item.question)).toEqual([
+      "First",
+      "Second",
+      "Third",
+      "Latest",
+    ]);
+    expect(captured.map((item) => item.messageLocator?.ordinal)).toEqual([0, 1, 2, 3]);
+    expect(scrollContainer.scrollTop).toBe(1600);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 });

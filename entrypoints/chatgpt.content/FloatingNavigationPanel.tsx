@@ -27,7 +27,7 @@ import {
 import { browser } from "wxt/browser";
 import { getConversationId } from "../../adapters/chatgpt/getConversation";
 import {
-  getCapturedQuestions,
+  getAllCapturedQuestions,
   getLatestCapturedQuestion,
 } from "../../adapters/chatgpt/questionCapture";
 import {
@@ -506,7 +506,6 @@ export function FloatingNavigationPanel() {
         ? undefined
         : selectedNodeIdRef.current;
       if (!retainedSelection) clearGraphSelection();
-      setPanelView("current");
       await loadFloatingPanelState(retainedSelection);
       return true;
     } catch {
@@ -609,7 +608,7 @@ export function FloatingNavigationPanel() {
     setNotice(undefined);
     closeProjectMenu();
     try {
-      const capturedQuestions = getCapturedQuestions();
+      const capturedQuestions = await getAllCapturedQuestions();
       if (!capturedQuestions.length) {
         setError("当前页面没有可建图的用户问题。");
         return;

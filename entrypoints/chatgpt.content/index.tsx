@@ -4,7 +4,7 @@ import { createShadowRootUi } from "wxt/utils/content-script-ui/shadow-root";
 import { defineContentScript } from "wxt/utils/define-content-script";
 import {
   getLatestCapturedQuestion,
-  locateQuestionMessage,
+  locateQuestionMessageWithHistory,
   watchForRefinedMessageLocator,
 } from "../../adapters/chatgpt/questionCapture";
 import { getConversationId } from "../../adapters/chatgpt/getConversation";
@@ -172,21 +172,28 @@ export default defineContentScript({
           } satisfies LocateQuestionResponse);
           return undefined;
         }
-        const method = locateQuestionMessage(
+        void locateQuestionMessageWithHistory(
           rawMessage.messageId,
           rawMessage.messageAnchor,
           rawMessage.messageLocator,
-        );
-        sendResponse(
-          method
-            ? ({ ok: true, method } satisfies LocateQuestionResponse)
-            : ({
-                ok: false,
-                code: "MESSAGE_NOT_FOUND",
-                error: "没有找到原问题。",
-              } satisfies LocateQuestionResponse),
-        );
-        return undefined;
+        ).then((method) => {
+          sendResponse(
+            method
+              ? ({ ok: true, method } satisfies LocateQuestionResponse)
+              : ({
+                  ok: false,
+                  code: "MESSAGE_NOT_FOUND",
+                  error: "已扫描该会话的历史内容，但没有找到原问题。",
+                } satisfies LocateQuestionResponse),
+          );
+        }).catch(() => {
+          sendResponse({
+            ok: false,
+            code: "MESSAGE_NOT_FOUND",
+            error: "扫描历史消息时未能找到原问题。",
+          } satisfies LocateQuestionResponse);
+        });
+        return true;
       }
       return undefined;
     });
