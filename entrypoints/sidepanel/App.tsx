@@ -26,6 +26,7 @@ import { StatusPill } from "../../components/StatusPill";
 import { db } from "../../db/database";
 import { DiscussionService } from "../../graph/discussionService";
 import { getCurrentPath, getOpenBranches } from "../../graph/questionTree";
+import { openFloatingPanelInActiveTab } from "../../platform/floatingPanel";
 import {
   hasActiveProviderPermission,
   requestActiveProviderPermission,
@@ -292,6 +293,15 @@ export default function App() {
     });
   }
 
+  async function openFloatingPanel(): Promise<void> {
+    setError(undefined);
+    try {
+      await openFloatingPanelInActiveTab();
+    } catch (openError) {
+      setError(messageFromError(openError));
+    }
+  }
+
   const header = (
     <ProjectHeader
       projects={projects}
@@ -300,6 +310,7 @@ export default function App() {
       onCreate={() => setProjectDialog({})}
       onEdit={() => selectedProject && setProjectDialog({ project: selectedProject })}
       onDelete={() => selectedProject && requestProjectDelete(selectedProject)}
+      onOpenFloatingPanel={() => void openFloatingPanel()}
       onSettings={() => setSettingsOpen(true)}
     />
   );

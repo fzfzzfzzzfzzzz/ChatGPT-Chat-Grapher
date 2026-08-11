@@ -299,7 +299,7 @@
 .chat-graph-project-menu__item {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
   align-items: center;
   gap: 2px;
 }
@@ -337,6 +337,7 @@
   background: var(--cg-bg-subtle);
 }
 
+.chat-graph-project-menu__rename-trigger,
 .chat-graph-project-menu__delete {
   display: grid;
   width: 28px;
@@ -356,8 +357,65 @@
 }
 
 .chat-graph-project-menu__select:disabled,
+.chat-graph-project-menu__rename-trigger:disabled,
 .chat-graph-project-menu__delete:disabled {
   opacity: 0.45;
+  cursor: wait;
+}
+
+.chat-graph-project-menu__rename {
+  display: grid;
+  min-width: 0;
+  min-height: 38px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 5px;
+  border-radius: 8px;
+  background: var(--cg-bg-subtle);
+}
+
+.chat-graph-project-menu__rename input {
+  min-width: 0;
+  width: 100%;
+  height: 29px;
+  padding: 5px 7px;
+  border: 1px solid var(--cg-border);
+  border-radius: 6px;
+  outline: 0;
+  color: var(--cg-text);
+  background: var(--cg-bg-solid);
+  font-size: 10.5px;
+}
+
+.chat-graph-project-menu__rename input:focus {
+  border-color: color-mix(in srgb, var(--cg-accent) 52%, var(--cg-border));
+  box-shadow: 0 0 0 2px var(--cg-accent-soft);
+}
+
+.chat-graph-project-menu__rename button {
+  min-height: 27px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--cg-text-soft);
+  background: transparent;
+  cursor: pointer;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.chat-graph-project-menu__rename button:hover:not(:disabled) {
+  background: var(--cg-bg-solid);
+}
+
+.chat-graph-project-menu__rename button.is-primary {
+  color: #fff;
+  background: var(--cg-accent);
+}
+
+.chat-graph-project-menu__rename button:disabled {
+  opacity: 0.5;
   cursor: wait;
 }
 
@@ -574,6 +632,11 @@
 .chat-graph-header__actions .chat-graph-capture-toggle.is-paused {
   color: #b45309;
   background: rgba(245, 158, 11, 0.11);
+}
+
+.chat-graph-project-menu__rename-trigger:hover:not(:disabled) {
+  color: var(--cg-accent);
+  background: var(--cg-accent-soft);
 }
 
 .chat-graph-header__actions .chat-graph-page-picker.is-active {
@@ -1553,16 +1616,20 @@ button.chat-graph-copy {
   border-radius: inherit;
   background: color-mix(in srgb, var(--cg-text) 28%, transparent);
   backdrop-filter: blur(2px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .chat-graph-navigation-layer > section {
   width: min(340px, 100%);
+  max-height: 100%;
   padding: 14px;
   border: 1px solid var(--cg-border);
   border-radius: 13px;
   color: var(--cg-text);
   background: var(--cg-bg-solid);
   box-shadow: var(--cg-shadow);
+  overflow: auto;
 }
 
 .chat-graph-navigation-layer h3 { margin: 0; font-size: 14px; }

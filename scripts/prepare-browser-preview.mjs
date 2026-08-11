@@ -17,6 +17,7 @@ const browserMock = String.raw`<script>
         async sendMessage() { return undefined; },
       },
       storage: {
+        onChanged: event,
         local: {
           async get(keys) {
             if (typeof keys === "string") return { [keys]: localState[keys] };
@@ -38,6 +39,7 @@ const browserMock = String.raw`<script>
       tabs: {
         onActivated: event,
         onUpdated: event,
+        async sendMessage() { return undefined; },
         async query() {
           return [{
             id: 1,

@@ -1,4 +1,12 @@
-import { ChevronDown, FolderKanban, Pencil, Plus, Settings, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  FolderKanban,
+  Pencil,
+  PictureInPicture2,
+  Plus,
+  Settings,
+  Trash2,
+} from "lucide-react";
 import type { Project } from "../types/domain";
 
 type Props = {
@@ -8,6 +16,7 @@ type Props = {
   onCreate: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onOpenFloatingPanel: () => void;
   onSettings: () => void;
 };
 
@@ -18,6 +27,7 @@ export function ProjectHeader({
   onCreate,
   onEdit,
   onDelete,
+  onOpenFloatingPanel,
   onSettings,
 }: Props) {
   return (
@@ -51,6 +61,15 @@ export function ProjectHeader({
         </div>
       </div>
       <div className="project-header__actions">
+        <button
+          className="icon-button"
+          type="button"
+          title="打开页面浮窗"
+          aria-label="打开页面浮窗"
+          onClick={onOpenFloatingPanel}
+        >
+          <PictureInPicture2 size={15} />
+        </button>
         <button className="icon-button" type="button" title="设置" onClick={onSettings}>
           <Settings size={15} />
         </button>

@@ -648,6 +648,10 @@ export default defineBackground(() => {
       void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
+    if (rawMessage.type === "RENAME_PANEL_PROJECT") {
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
+      return true;
+    }
     if (rawMessage.type === "DELETE_PANEL_PROJECT") {
       void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;

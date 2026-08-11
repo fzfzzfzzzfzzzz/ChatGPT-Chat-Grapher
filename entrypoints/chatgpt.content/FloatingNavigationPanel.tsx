@@ -11,6 +11,7 @@ import {
   Network,
   PanelRightOpen,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -117,6 +118,9 @@ export function FloatingNavigationPanel() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectGoal, setNewProjectGoal] = useState("");
+  const [renamingProjectId, setRenamingProjectId] = useState<string>();
+  const [renamedProjectTitle, setRenamedProjectTitle] = useState("");
+  const [savingRenamedProject, setSavingRenamedProject] = useState(false);
   const [switchingProjectId, setSwitchingProjectId] = useState<string>();
   const [savingProject, setSavingProject] = useState(false);
   const [confirmingDeleteProjectId, setConfirmingDeleteProjectId] = useState<string>();
@@ -197,7 +201,21 @@ export function FloatingNavigationPanel() {
     void loadFloatingPanelState();
 
     const listener = (message: unknown) => {
-      if (isExtensionMessage(message) && message.type === "FLOATING_PANEL_STATE_UPDATED") {
+      if (!isExtensionMessage(message)) return;
+      if (message.type === "OPEN_FLOATING_PANEL") {
+        setDismissed(false);
+        setSelectingPageQuestion(false);
+        clearGraphSelection();
+        setEditingParent(false);
+        setConfirmingNavigationTarget(undefined);
+        setPendingNavigationTarget(undefined);
+        closeProjectMenu();
+        setMode("working");
+        setPanelView("current");
+        void loadFloatingPanelState();
+        return;
+      }
+      if (message.type === "FLOATING_PANEL_STATE_UPDATED") {
         const incoming = message.state;
         const selected = selectedNodeIdRef.current;
         const previous = {
@@ -322,6 +340,23 @@ export function FloatingNavigationPanel() {
     const timeout = window.setTimeout(() => setNotice(undefined), 4_200);
     return () => window.clearTimeout(timeout);
   }, [notice]);
+
+  useEffect(() => {
+    if (!confirmingNavigationTarget && !pendingNavigationTarget) return;
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || navigationBusy) return;
+      setConfirmingNavigationTarget(undefined);
+      setPendingNavigationTarget(undefined);
+    };
+    window.addEventListener("keydown", dismissOnEscape);
+    return () => window.removeEventListener("keydown", dismissOnEscape);
+  }, [confirmingNavigationTarget, navigationBusy, pendingNavigationTarget]);
+
+  function dismissNavigationLayer() {
+    if (navigationBusy) return;
+    setConfirmingNavigationTarget(undefined);
+    setPendingNavigationTarget(undefined);
+  }
 
   useEffect(() => {
     const clampCurrentPosition = () => {
@@ -534,11 +569,42 @@ export function FloatingNavigationPanel() {
     }
   }
 
+  function beginProjectRename(projectId: string, title: string) {
+    setCreatingProject(false);
+    setConfirmingDeleteProjectId(undefined);
+    setRenamingProjectId(projectId);
+    setRenamedProjectTitle(title);
+  }
+
+  async function renameProject(event: FormEvent) {
+    event.preventDefault();
+    const projectId = renamingProjectId;
+    const title = renamedProjectTitle.trim();
+    if (!projectId || !title) return;
+    setSavingRenamedProject(true);
+    try {
+      const result = await performPanelMutation<{ projectId?: string }>({
+        type: "RENAME_PANEL_PROJECT",
+        projectId,
+        title,
+        context: panelActionContext(),
+      }, "暂时无法重命名项目，请重试。");
+      if (result) {
+        setRenamingProjectId(undefined);
+        setRenamedProjectTitle("");
+      }
+    } finally {
+      setSavingRenamedProject(false);
+    }
+  }
+
   function closeProjectMenu() {
     setProjectMenuOpen(false);
     setCreatingProject(false);
     setNewProjectTitle("");
     setNewProjectGoal("");
+    setRenamingProjectId(undefined);
+    setRenamedProjectTitle("");
     setConfirmingDeleteProjectId(undefined);
   }
 
@@ -1071,7 +1137,39 @@ export function FloatingNavigationPanel() {
                 <>
                   <div className="chat-graph-project-menu__label">PROJECTS</div>
                   {state.projects.map((project) =>
-                    confirmingDeleteProjectId === project.id ? (
+                    renamingProjectId === project.id ? (
+                      <form
+                        key={project.id}
+                        className="chat-graph-project-menu__rename"
+                        onSubmit={(event) => void renameProject(event)}
+                      >
+                        <input
+                          autoFocus
+                          required
+                          maxLength={80}
+                          aria-label={`重命名项目：${project.title}`}
+                          value={renamedProjectTitle}
+                          onChange={(event) => setRenamedProjectTitle(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          disabled={savingRenamedProject}
+                          onClick={() => {
+                            setRenamingProjectId(undefined);
+                            setRenamedProjectTitle("");
+                          }}
+                        >
+                          取消
+                        </button>
+                        <button
+                          className="is-primary"
+                          type="submit"
+                          disabled={savingRenamedProject || !renamedProjectTitle.trim()}
+                        >
+                          {savingRenamedProject ? "保存中…" : "保存"}
+                        </button>
+                      </form>
+                    ) : confirmingDeleteProjectId === project.id ? (
                       <div
                         key={project.id}
                         className="chat-graph-project-menu__confirm-delete"
@@ -1102,7 +1200,7 @@ export function FloatingNavigationPanel() {
                           type="button"
                           role="menuitemradio"
                           aria-checked={project.id === state.projectId}
-                          disabled={Boolean(switchingProjectId) || Boolean(deletingProjectId)}
+                          disabled={Boolean(switchingProjectId) || Boolean(deletingProjectId) || Boolean(renamingProjectId)}
                           onClick={() => void selectProject(project.id)}
                         >
                           <span title={project.title}>
@@ -1111,12 +1209,26 @@ export function FloatingNavigationPanel() {
                           {project.id === state.projectId ? <Check size={14} aria-hidden="true" /> : null}
                         </button>
                         <button
+                          className="chat-graph-project-menu__rename-trigger"
+                          type="button"
+                          title={`重命名项目：${project.title}`}
+                          aria-label={`重命名项目：${project.title}`}
+                          disabled={Boolean(switchingProjectId) || Boolean(deletingProjectId) || Boolean(renamingProjectId)}
+                          onClick={() => beginProjectRename(project.id, project.title)}
+                        >
+                          <Pencil size={13} aria-hidden="true" />
+                        </button>
+                        <button
                           className="chat-graph-project-menu__delete"
                           type="button"
                           title={`删除项目：${project.title}`}
                           aria-label={`删除项目：${project.title}`}
-                          disabled={Boolean(switchingProjectId) || Boolean(deletingProjectId)}
-                          onClick={() => setConfirmingDeleteProjectId(project.id)}
+                          disabled={Boolean(switchingProjectId) || Boolean(deletingProjectId) || Boolean(renamingProjectId)}
+                          onClick={() => {
+                            setRenamingProjectId(undefined);
+                            setRenamedProjectTitle("");
+                            setConfirmingDeleteProjectId(project.id);
+                          }}
                         >
                           <Trash2 size={13} aria-hidden="true" />
                         </button>
@@ -1130,6 +1242,8 @@ export function FloatingNavigationPanel() {
                     role="menuitem"
                     onClick={() => {
                       setConfirmingDeleteProjectId(undefined);
+                      setRenamingProjectId(undefined);
+                      setRenamedProjectTitle("");
                       setCreatingProject(true);
                     }}
                   >
@@ -1436,7 +1550,13 @@ export function FloatingNavigationPanel() {
         </div>
       ) : null}
       {confirmingNavigationTarget ? (
-        <div className="chat-graph-navigation-layer" role="presentation">
+        <div
+          className="chat-graph-navigation-layer"
+          role="presentation"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) dismissNavigationLayer();
+          }}
+        >
           <section role="dialog" aria-modal="true" aria-labelledby="chat-graph-locate-title">
             <h3 id="chat-graph-locate-title">定位到原问题？</h3>
             <p title={confirmingNavigationTarget.question}>{confirmingNavigationTarget.question}</p>
@@ -1460,7 +1580,13 @@ export function FloatingNavigationPanel() {
         </div>
       ) : null}
       {pendingNavigationTarget ? (
-        <div className="chat-graph-navigation-layer" role="presentation">
+        <div
+          className="chat-graph-navigation-layer"
+          role="presentation"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) dismissNavigationLayer();
+          }}
+        >
           <section role="dialog" aria-modal="true" aria-labelledby="chat-graph-navigation-title">
             <h3 id="chat-graph-navigation-title">原会话尚未打开</h3>
             <p title={pendingNavigationTarget.question}>{pendingNavigationTarget.question}</p>

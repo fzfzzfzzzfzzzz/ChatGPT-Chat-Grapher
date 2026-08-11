@@ -199,6 +199,24 @@ describe("floating panel commands", () => {
     expect(removed.ok && removed.state.projectId).toBe(first.id);
   });
 
+  it("renames an existing project and returns the updated project list", async () => {
+    const project = await service.createProject("Old name", "Goal");
+    selectedProjectId = project.id;
+
+    const response = await executeFloatingPanelCommand({
+      type: "RENAME_PANEL_PROJECT",
+      projectId: project.id,
+      title: "  New name  ",
+      context: {},
+    }, dependencies());
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    expect(response.state.projectTitle).toBe("New name");
+    expect(response.state.projects).toContainEqual({ id: project.id, title: "New name" });
+    expect((await service.projects.get(project.id))?.title).toBe("New name");
+  });
+
   it("rejects stale cross-project node operations without changing data", async () => {
     const first = await service.createProject("First", "Goal");
     const second = await service.createProject("Second", "Goal");

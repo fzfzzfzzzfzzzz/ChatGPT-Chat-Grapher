@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionMessage, FloatingPanelState } from "../shared/messages";
@@ -444,7 +444,7 @@ describe("FloatingNavigationPanel interactions", () => {
     expect(await screen.findByText("滚动页面并点击任意用户问题")).toBeDefined();
   });
 
-  it("closes the working floating panel until the page is refreshed", async () => {
+  it("reopens a dismissed floating panel when the side panel requests it", async () => {
     browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
       if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
       return { ok: true };
@@ -455,9 +455,17 @@ describe("FloatingNavigationPanel interactions", () => {
     await userEvent.click(screen.getByRole("button", { name: "关闭 Chat Graph 浮窗" }));
 
     expect(screen.queryByLabelText("Chat Graph 当前讨论导航")).toBeNull();
+    const listener = browserMocks.addMessageListener.mock.calls[0]?.[0] as
+      | ((message: ExtensionMessage) => void)
+      | undefined;
+    expect(listener).toBeDefined();
+    act(() => listener?.({ type: "OPEN_FLOATING_PANEL" }));
+
+    expect(await screen.findByLabelText("Chat Graph 当前讨论导航")).toBeDefined();
+    expect(screen.getByText("Child question")).toBeDefined();
   });
 
-  it("also provides a close button when the floating panel is collapsed", async () => {
+  it("expands a collapsed floating panel when the side panel requests it", async () => {
     browserMocks.storageGet.mockResolvedValueOnce({
       floatingPanelPreferencesV06: { schemaVersion: 2, mode: "collapsed" },
     });
@@ -468,9 +476,14 @@ describe("FloatingNavigationPanel interactions", () => {
 
     render(<FloatingNavigationPanel />);
     await screen.findByRole("button", { name: "展开 Chat Graph 工作面板" });
-    await userEvent.click(screen.getByRole("button", { name: "关闭 Chat Graph 浮窗" }));
+    const listener = browserMocks.addMessageListener.mock.calls[0]?.[0] as
+      | ((message: ExtensionMessage) => void)
+      | undefined;
+    expect(listener).toBeDefined();
+    act(() => listener?.({ type: "OPEN_FLOATING_PANEL" }));
 
-    expect(screen.queryByLabelText("Chat Graph 当前讨论导航")).toBeNull();
+    expect(await screen.findByText("Child question")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "展开 Chat Graph 工作面板" })).toBeNull();
   });
 
   it("applies one-click graph results without issuing a follow-up state request", async () => {
@@ -554,6 +567,47 @@ describe("FloatingNavigationPanel interactions", () => {
     expect(browserMocks.sendMessage).toHaveBeenCalledWith({
       type: "SELECT_PANEL_PROJECT",
       projectId: "project-2",
+      context: {},
+    });
+  });
+
+  it("renames an existing project from the project menu", async () => {
+    const projectState: FloatingPanelState = {
+      ...baseState,
+      projects: [
+        { id: "project-1", title: "Project" },
+        { id: "project-2", title: "Second project" },
+      ],
+    };
+    const renamedState: FloatingPanelState = {
+      ...projectState,
+      projects: [
+        { id: "project-1", title: "Project" },
+        { id: "project-2", title: "Research project" },
+      ],
+    };
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return projectState;
+      if (message.type === "RENAME_PANEL_PROJECT") {
+        return { ok: true, state: renamedState, result: { projectId: "project-2" } };
+      }
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    await userEvent.click(screen.getByRole("button", { name: /当前项目：Project/ }));
+    await userEvent.click(screen.getByRole("button", { name: "重命名项目：Second project" }));
+    const input = screen.getByRole("textbox", { name: "重命名项目：Second project" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Research project");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByRole("menuitemradio", { name: "Research project" })).toBeDefined();
+    expect(browserMocks.sendMessage).toHaveBeenCalledWith({
+      type: "RENAME_PANEL_PROJECT",
+      projectId: "project-2",
+      title: "Research project",
       context: {},
     });
   });

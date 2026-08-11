@@ -124,6 +124,7 @@ export type NavigateToNodeResponse =
 
 export type ExtensionMessage =
   | { type: "GET_FLOATING_PANEL_STATE"; chatId?: string; selectedNodeId?: string }
+  | { type: "OPEN_FLOATING_PANEL" }
   | { type: "OPEN_SIDE_PANEL"; projectId?: string; view?: "graph" }
   | { type: "DISCUSSION_MAP_CHANGED" }
   | { type: "FLOATING_PANEL_STATE_UPDATED"; state: FloatingPanelState }
@@ -166,6 +167,7 @@ export type ExtensionMessage =
   | { type: "FOCUS_PANEL_PARENT"; currentNodeId: string }
   | { type: "SELECT_PANEL_PROJECT"; projectId: string; context: PanelActionContext }
   | { type: "CREATE_PANEL_PROJECT"; title: string; goal: string; context: PanelActionContext }
+  | { type: "RENAME_PANEL_PROJECT"; projectId: string; title: string; context: PanelActionContext }
   | { type: "DELETE_PANEL_PROJECT"; projectId: string; context: PanelActionContext }
   | {
       type: "DELETE_PANEL_NODE";

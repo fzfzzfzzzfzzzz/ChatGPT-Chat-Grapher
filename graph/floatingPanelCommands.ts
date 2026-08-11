@@ -16,6 +16,7 @@ export type FloatingPanelCommandMessage = Extract<
     type:
       | "SELECT_PANEL_PROJECT"
       | "CREATE_PANEL_PROJECT"
+      | "RENAME_PANEL_PROJECT"
       | "DELETE_PANEL_PROJECT"
       | "DELETE_PANEL_NODE"
       | "SET_CAPTURE_SERVICE_ENABLED"
@@ -61,6 +62,8 @@ export async function executeFloatingPanelCommand(
         return await selectProject(message, dependencies);
       case "CREATE_PANEL_PROJECT":
         return await createProject(message, dependencies);
+      case "RENAME_PANEL_PROJECT":
+        return await renameProject(message, dependencies);
       case "DELETE_PANEL_PROJECT":
         return await deleteProject(message, dependencies);
       case "DELETE_PANEL_NODE":
@@ -101,6 +104,18 @@ async function createProject(
   );
   await dependencies.setSelectedProjectId(project.id);
   return success(dependencies, clearViewing(message.context), { projectId: project.id });
+}
+
+async function renameProject(
+  message: Extract<FloatingPanelCommandMessage, { type: "RENAME_PANEL_PROJECT" }>,
+  dependencies: FloatingPanelCommandDependencies,
+) {
+  const title = message.title.trim();
+  if (!title) throw new PanelCommandError("INVALID_OPERATION", "项目名称不能为空。");
+  const project = await dependencies.service.projects.get(message.projectId);
+  if (!project) throw new PanelCommandError("NOT_FOUND", "项目不存在或已被删除。");
+  await dependencies.service.updateProject(project.id, { title });
+  return success(dependencies, message.context, { projectId: project.id });
 }
 
 async function deleteProject(
@@ -317,9 +332,6 @@ function parentChangeError(error: unknown): PanelCommandError {
   }
   if (message.includes("cycle")) {
     return new PanelCommandError("INVALID_OPERATION", "更换父节点会形成循环关系。");
-  }
-  if (message.includes("completed")) {
-    return new PanelCommandError("INVALID_OPERATION", "已完结节点不能作为父节点。");
   }
   if (message.includes("same project")) {
     return new PanelCommandError("INVALID_OPERATION", "父节点必须属于当前项目。");
