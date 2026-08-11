@@ -1,0 +1,10 @@
+node_modules/
+.wxt/
+.output/
+.vite/
+coverage/
+*.zip
+*.log
+.env
+.env.*
+!.env.example
