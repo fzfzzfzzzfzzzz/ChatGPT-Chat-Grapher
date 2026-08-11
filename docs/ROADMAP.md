@@ -1,6 +1,6 @@
 # Chat Graph — Roadmap
 
-> 文档版本：2026-08 · 当前产品版本：v0.6.0
+> 文档版本：2026-08 · 当前产品版本：v0.7.0
 
 ## 产品定位
 
@@ -77,6 +77,12 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 默认工作态明确不包含：Open Branches、Status、完整 Current Path、Full Graph、Inbox 或 Search。
 
 第三层 Local Graph 本版本未实现；仍作为后续验证项，只有在能承担 Current 周围 1–2 层节点的高频导航且不复制详情页时才考虑保留。
+
+### v0.7 — Graph Interaction
+
+- 在常驻浮窗中加入紧凑图视角。
+- 节点右键支持查看总结与详情、标记状态以及删除节点。
+- 删除节点后安全重挂直接子节点。
 
 ## 后续优先级
 

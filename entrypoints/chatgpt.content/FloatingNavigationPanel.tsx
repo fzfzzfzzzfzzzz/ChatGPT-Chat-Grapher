@@ -3,7 +3,9 @@ import {
   Check,
   ChevronDown,
   ExternalLink,
+  GitBranch,
   GripVertical,
+  List,
   Minus,
   Pause,
   Play,
@@ -28,6 +30,7 @@ import {
   hasRecognizedNewQuestion,
   shouldResetFloatingPanelSelection,
 } from "../../graph/floatingPanelSelection";
+import { CompactProjectGraph } from "./CompactProjectGraph";
 import {
   type CaptureQuestionResponse,
   type ConversationOpenMode,
@@ -56,9 +59,12 @@ const EMPTY_STATE: FloatingPanelState = {
 type PanelPreferences = {
   schemaVersion?: 2;
   mode: FloatingPanelMode;
+  view?: FloatingPanelView;
   x?: number;
   y?: number;
 };
+
+type FloatingPanelView = "current" | "graph";
 
 type ParentEditorProps = {
   state: FloatingPanelState;
@@ -81,6 +87,7 @@ export function FloatingNavigationPanel() {
   } | undefined>(undefined);
   const [state, setState] = useState<FloatingPanelState>(EMPTY_STATE);
   const [mode, setMode] = useState<FloatingPanelMode>("working");
+  const [panelView, setPanelView] = useState<FloatingPanelView>("current");
   const [position, setPosition] = useState<{ x: number; y: number }>();
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [editingParent, setEditingParent] = useState(false);
@@ -117,6 +124,7 @@ export function FloatingNavigationPanel() {
         // behavior. Migrate once to the new working default while retaining the
         // user's saved position; subsequent explicit collapses are preserved.
         setMode(preferences.schemaVersion === 2 ? preferences.mode : "working");
+        setPanelView(preferences.view ?? "current");
         if (preferences.x !== undefined && preferences.y !== undefined) {
           setPosition({ x: preferences.x, y: preferences.y });
         }
@@ -158,6 +166,7 @@ export function FloatingNavigationPanel() {
     const refreshForLocationChange = () => {
       clearGraphSelection();
       setEditingParent(false);
+      setPanelView("current");
       void loadFloatingPanelState();
     };
     void loadFloatingPanelState();
@@ -185,6 +194,7 @@ export function FloatingNavigationPanel() {
           panelStateRequestRef.current += 1;
           clearGraphSelection();
           setEditingParent(false);
+          setPanelView("current");
           setState(incoming);
           return;
         }
@@ -218,12 +228,13 @@ export function FloatingNavigationPanel() {
         [PANEL_PREFERENCES_KEY]: {
           schemaVersion: 2,
           mode,
+          view: panelView,
           ...(position ? position : {}),
         } satisfies PanelPreferences,
       });
     }, 120);
     return () => window.clearTimeout(timeout);
-  }, [mode, position, preferencesReady]);
+  }, [mode, panelView, position, preferencesReady]);
 
   useEffect(() => {
     setParentSummaryExpanded(false);
@@ -349,7 +360,7 @@ export function FloatingNavigationPanel() {
   }
 
   async function viewGraphNodeDetails(nodeId: string) {
-    await selectGraphNode(nodeId);
+    if (await selectGraphNode(nodeId)) setPanelView("current");
   }
 
   async function focusParent() {
@@ -489,6 +500,7 @@ export function FloatingNavigationPanel() {
         ? undefined
         : selectedNodeIdRef.current;
       if (!retainedSelection) clearGraphSelection();
+      setPanelView("current");
       await loadFloatingPanelState(retainedSelection);
       return true;
     } catch {
@@ -898,6 +910,34 @@ export function FloatingNavigationPanel() {
       </header>
 
       <div className="chat-graph-panel__body">
+        <nav className="chat-graph-view-tabs" aria-label="浮窗视角">
+          <button
+            type="button"
+            className={`${panelView === "current" ? "is-active" : ""}${isViewingGraphNode ? " has-selection" : ""}`.trim() || undefined}
+            aria-current={panelView === "current" ? "page" : undefined}
+            onClick={() => setPanelView("current")}
+          >
+            <List size={13} aria-hidden="true" />
+            当前
+            {isViewingGraphNode ? (
+              <span className="chat-graph-view-tabs__selection-dot" aria-hidden="true" />
+            ) : null}
+          </button>
+          <button
+            type="button"
+            className={panelView === "graph" ? "is-active" : undefined}
+            aria-current={panelView === "graph" ? "page" : undefined}
+            onClick={() => {
+              setEditingParent(false);
+              closeProjectMenu();
+              setPanelView("graph");
+            }}
+          >
+            <GitBranch size={13} aria-hidden="true" />
+            图视角
+          </button>
+        </nav>
+
         {!state.captureEnabled ? (
           <div className="chat-graph-capture-paused" role="status">
             <Pause size={13} aria-hidden="true" />
@@ -930,7 +970,19 @@ export function FloatingNavigationPanel() {
           </div>
         ) : null}
 
-        {state.parentState === "selecting" ? (
+        {panelView === "graph" ? (
+          <CompactProjectGraph
+            nodes={state.graphNodes ?? []}
+            {...(state.currentNodeId ? { currentNodeId: state.currentNodeId } : {})}
+            {...(state.focusedNodeId ? { focusedNodeId: state.focusedNodeId } : {})}
+            {...(selectedNodeId ? { selectedNodeId } : {})}
+            onSelectNode={(nodeId) => void selectGraphNode(nodeId)}
+            onViewNodeDetails={(nodeId) => void viewGraphNodeDetails(nodeId)}
+            onSetNodeStatus={setGraphNodeStatus}
+            onDeleteNode={deleteGraphNode}
+            onRequestLocateNode={setConfirmingNavigationNodeId}
+          />
+        ) : state.parentState === "selecting" ? (
           <>
             <section className="chat-graph-section chat-graph-section--current chat-graph-section--selection-current">
               <div className="chat-graph-section__heading">
@@ -1302,6 +1354,9 @@ function asPreferences(value: unknown): PanelPreferences | undefined {
   return {
     mode: preferences.mode,
     ...(preferences.schemaVersion === 2 ? { schemaVersion: 2 as const } : {}),
+    ...(preferences.view === "current" || preferences.view === "graph"
+      ? { view: preferences.view }
+      : {}),
     ...(typeof preferences.x === "number" ? { x: preferences.x } : {}),
     ...(typeof preferences.y === "number" ? { y: preferences.y } : {}),
   };

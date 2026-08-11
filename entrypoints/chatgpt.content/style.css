@@ -571,6 +571,56 @@
   scrollbar-color: var(--cg-border) transparent;
 }
 
+.chat-graph-view-tabs {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  gap: 3px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--cg-border-soft);
+  background: var(--cg-bg);
+  backdrop-filter: blur(14px);
+}
+
+.chat-graph-view-tabs button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 8px;
+  outline: 0;
+  color: var(--cg-text-muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 680;
+}
+
+.chat-graph-view-tabs button:hover {
+  color: var(--cg-text);
+  background: var(--cg-bg-subtle);
+}
+
+.chat-graph-view-tabs button.is-active {
+  color: var(--cg-accent);
+  background: var(--cg-accent-soft);
+}
+
+.chat-graph-view-tabs button.has-selection:not(.is-active) {
+  color: var(--cg-text);
+}
+
+.chat-graph-view-tabs__selection-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cg-accent);
+  box-shadow: 0 0 0 2px var(--cg-accent-soft);
+}
+
 .chat-graph-capture-paused {
   display: flex;
   align-items: flex-start;
