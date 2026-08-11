@@ -8,7 +8,7 @@ export function getLatestCapturedQuestion(root: ParentNode = document): Captured
   return getCapturedQuestions(root).at(-1);
 }
 
-function getCapturedQuestions(root: ParentNode = document): CapturedQuestion[] {
+export function getCapturedQuestions(root: ParentNode = document): CapturedQuestion[] {
   const messages = getUserMessages(root);
   const meta = getConversationMetaFromPage();
   if (!meta) return [];

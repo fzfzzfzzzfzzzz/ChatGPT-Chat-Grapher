@@ -237,7 +237,7 @@ export default function App() {
   return (
     <SidePanelLayout
       header={header}
-      footer={<span>v0.7.0 · ChatGPT stores content; Chat Graph stores structure.</span>}
+      footer={<span>v0.8.0 · ChatGPT stores content; Chat Graph stores structure.</span>}
     >
       {error ? (
         <div className="error-banner" role="alert">

@@ -24,22 +24,24 @@ export class CandidateRepository {
   }
 
   findByMessage(
+    projectId: string,
     chatId: string,
     messageId: string,
   ): Promise<QuestionCandidate | undefined> {
     return this.database.candidates
-      .where("[chatId+messageId]")
-      .equals([chatId, messageId])
+      .where("[projectId+chatId+messageId]")
+      .equals([projectId, chatId, messageId])
       .first();
   }
 
   findByAnchor(
+    projectId: string,
     chatId: string,
     messageAnchor: string,
   ): Promise<QuestionCandidate | undefined> {
     return this.database.candidates
-      .where("chatId")
-      .equals(chatId)
+      .where("[projectId+chatId]")
+      .equals([projectId, chatId])
       .filter((candidate) => candidate.messageAnchor === messageAnchor)
       .first();
   }

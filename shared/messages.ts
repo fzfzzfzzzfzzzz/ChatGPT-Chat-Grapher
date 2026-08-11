@@ -55,6 +55,15 @@ export type PanelActionResponse =
   | { ok: true }
   | { ok: false; error: string };
 
+export type BuildCurrentPageGraphResponse =
+  | {
+      ok: true;
+      createdCount: number;
+      skippedCount: number;
+      activeNodeId: string;
+    }
+  | { ok: false; error: string };
+
 export type ConversationOpenMode = "new_tab" | "current_tab";
 
 export type NavigateToNodeStatus =
@@ -79,6 +88,7 @@ export type ExtensionMessage =
   | { type: "FLOATING_PANEL_STATE_UPDATED"; state: FloatingPanelState }
   | { type: "CHATGPT_LOCATION_CHANGED"; chatId?: string }
   | { type: "CAPTURE_QUESTION"; captured: CapturedQuestion; manual?: boolean }
+  | { type: "BUILD_CURRENT_PAGE_GRAPH"; capturedQuestions: CapturedQuestion[] }
   | {
       type: "REFINE_MESSAGE_LOCATOR";
       chatId: string;

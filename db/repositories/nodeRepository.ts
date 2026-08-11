@@ -27,22 +27,24 @@ export class NodeRepository {
   }
 
   findByMessage(
+    projectId: string,
     chatId: string,
     messageId: string,
   ): Promise<QuestionNode | undefined> {
     return this.database.nodes
-      .where("[chatId+messageId]")
-      .equals([chatId, messageId])
+      .where("[projectId+chatId+messageId]")
+      .equals([projectId, chatId, messageId])
       .first();
   }
 
   findByAnchor(
+    projectId: string,
     chatId: string,
     messageAnchor: string,
   ): Promise<QuestionNode | undefined> {
     return this.database.nodes
-      .where("chatId")
-      .equals(chatId)
+      .where("[projectId+chatId]")
+      .equals([projectId, chatId])
       .filter((node) => node.messageAnchor === messageAnchor)
       .first();
   }

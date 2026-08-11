@@ -17,6 +17,7 @@ import { initializeSidebarBehavior, openDiscussionDetail } from "../platform/sid
 import { selectExistingConversationTab } from "../platform/conversationNavigation";
 import { getAISettings } from "../settings/storage";
 import type {
+  BuildCurrentPageGraphResponse,
   FloatingPanelState,
   CaptureQuestionResponse,
   ExtensionMessage,
@@ -146,7 +147,11 @@ async function captureQuestion(
     });
     const stillPending = await service.candidates.get(candidate.id);
     if (!stillPending) {
-      const existingNode = await service.nodes.findByMessage(candidate.chatId, candidate.messageId);
+      const existingNode = await service.nodes.findByMessage(
+        project.id,
+        candidate.chatId,
+        candidate.messageId,
+      );
       return {
         ok: true,
         destination: "duplicate",
@@ -187,6 +192,24 @@ async function captureQuestion(
     await broadcastFloatingPanelState();
     return { ok: true, destination: "inbox" };
   }
+}
+
+async function buildCurrentPageGraph(
+  capturedQuestions: CapturedQuestion[],
+): Promise<BuildCurrentPageGraphResponse> {
+  if (!capturedQuestions.length) {
+    return { ok: false, error: "当前页面没有可建图的用户问题。" };
+  }
+  const normalized = capturedQuestions.map((captured) => ({
+    ...captured,
+    question: captured.question.trim(),
+    messageId:
+      captured.messageId || `${captured.chatId}:${fallbackSummary(captured.question)}`,
+  }));
+  const project = await ensureSelectedProject(normalized[0]!);
+  const result = await service.importLinearQuestions(project.id, normalized);
+  await broadcastFloatingPanelState();
+  return { ok: true, ...result };
 }
 
 async function focusPanelParent(currentNodeId: string): Promise<void> {
@@ -515,6 +538,17 @@ export default defineBackground(() => {
             ok: false,
             error: error instanceof Error ? error.message : "问题捕获失败。",
           } satisfies CaptureQuestionResponse),
+        );
+      return true;
+    }
+    if (rawMessage.type === "BUILD_CURRENT_PAGE_GRAPH") {
+      void buildCurrentPageGraph(rawMessage.capturedQuestions)
+        .then(sendResponse)
+        .catch((error: unknown) =>
+          sendResponse({
+            ok: false,
+            error: error instanceof Error ? error.message : "一键建图失败，请重试。",
+          } satisfies BuildCurrentPageGraphResponse),
         );
       return true;
     }

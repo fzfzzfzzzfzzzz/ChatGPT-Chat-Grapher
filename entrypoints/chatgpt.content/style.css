@@ -613,6 +613,22 @@
   color: var(--cg-text);
 }
 
+.chat-graph-view-tabs button.chat-graph-view-tabs__build {
+  margin-left: auto;
+  color: var(--cg-accent);
+  background: var(--cg-accent-soft);
+}
+
+.chat-graph-view-tabs button.chat-graph-view-tabs__build:hover:not(:disabled) {
+  color: var(--cg-accent-strong, var(--cg-accent));
+  filter: saturate(1.15);
+}
+
+.chat-graph-view-tabs button.chat-graph-view-tabs__build:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .chat-graph-view-tabs__selection-dot {
   width: 5px;
   height: 5px;

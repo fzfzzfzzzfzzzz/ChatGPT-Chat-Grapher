@@ -94,6 +94,24 @@ describe("DiscussionService v0.5", () => {
     expect(node.messageLocator?.turnId).toBe("turn-1");
   });
 
+  it("refines locator metadata for every project copy of a source message", async () => {
+    const firstProject = await service.createProject("First", "Goal");
+    const secondProject = await service.createProject("Second", "Goal");
+    const first = await service.createNode({ projectId: firstProject.id, ...capture("Shared", 1) });
+    const second = await service.createNode({ projectId: secondProject.id, ...capture("Shared", 1) });
+    const locator = {
+      version: 1 as const,
+      messageId: "stable-message-1",
+      turnId: "turn-1",
+      ordinal: 1,
+      fingerprint: "hash-1",
+    };
+
+    expect(await service.refineMessageLocator("chat-1", "user:1:hash-1", locator)).toBe(true);
+    expect((await service.nodes.get(first.id))?.messageLocator).toEqual(locator);
+    expect((await service.nodes.get(second.id))?.messageLocator).toEqual(locator);
+  });
+
   it("promotes candidates into a logical tree and keeps one active question", async () => {
     const project = await service.createProject("Project", "Goal");
     const rootCandidate = await service.createCandidate(project.id, capture("怎么做 Chat Graph？", 1));
@@ -123,6 +141,114 @@ describe("DiscussionService v0.5", () => {
     expect(first.parentId).toBeNull();
     expect(unrelated.parentId).toBeNull();
     expect(nodes.filter((node) => node.parentId === null)).toHaveLength(2);
+  });
+
+  it("imports an empty project as a resolved linear history with the latest question active", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const result = await service.importLinearQuestions(project.id, [
+      capture("First", 1),
+      capture("Second", 2),
+      capture("Latest", 3),
+    ]);
+    const nodes = await service.nodes.listForProject(project.id);
+    const first = nodes.find((node) => node.question === "First")!;
+    const second = nodes.find((node) => node.question === "Second")!;
+    const latest = nodes.find((node) => node.question === "Latest")!;
+
+    expect(result).toMatchObject({ createdCount: 3, skippedCount: 0 });
+    expect(first).toMatchObject({ parentId: null, status: "resolved" });
+    expect(second).toMatchObject({ parentId: first.id, status: "resolved" });
+    expect(latest).toMatchObject({ parentId: second.id, status: "active" });
+    expect((await service.projects.get(project.id))?.focusNodeId).toBe(latest.id);
+  });
+
+  it("creates a separate root and links remaining questions across skipped nodes", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const existing = await service.createNode({ projectId: project.id, ...capture("Existing", 2) });
+    const oldActive = await service.createNode({
+      projectId: project.id,
+      ...capture("Old active", 9),
+      parentId: existing.id,
+    });
+
+    const result = await service.importLinearQuestions(project.id, [
+      capture("First new", 1),
+      capture("Existing", 2),
+      capture("Latest new", 3),
+    ]);
+    const nodes = await service.nodes.listForProject(project.id);
+    const firstNew = nodes.find((node) => node.question === "First new")!;
+    const latestNew = nodes.find((node) => node.question === "Latest new")!;
+
+    expect(result).toMatchObject({ createdCount: 2, skippedCount: 1, activeNodeId: latestNew.id });
+    expect(firstNew.parentId).toBeNull();
+    expect(firstNew.status).toBe("resolved");
+    expect(latestNew.parentId).toBe(firstNew.id);
+    expect(latestNew.status).toBe("active");
+    expect((await service.nodes.get(existing.id))?.parentId).toBeNull();
+    expect((await service.nodes.get(oldActive.id))?.status).toBe("pending");
+  });
+
+  it("activates an existing latest question without changing its relation", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const existingLatest = await service.createNode({
+      projectId: project.id,
+      ...capture("Existing latest", 2),
+    });
+    await service.setStatus(existingLatest.id, "resolved");
+    const oldActive = await service.createNode({ projectId: project.id, ...capture("Old active", 9) });
+
+    const result = await service.importLinearQuestions(project.id, [
+      capture("New history", 1),
+      capture("Existing latest", 2),
+    ]);
+
+    expect(result).toMatchObject({ createdCount: 1, skippedCount: 1, activeNodeId: existingLatest.id });
+    expect(await service.nodes.get(existingLatest.id)).toMatchObject({
+      parentId: null,
+      status: "active",
+    });
+    expect((await service.nodes.get(oldActive.id))?.status).toBe("pending");
+    const newHistory = (await service.nodes.listForProject(project.id))
+      .find((node) => node.question === "New history")!;
+    expect(newHistory).toMatchObject({ parentId: null, status: "resolved" });
+  });
+
+  it("deduplicates within a project while allowing the same source question in another project", async () => {
+    const firstProject = await service.createProject("First", "Goal");
+    const secondProject = await service.createProject("Second", "Goal");
+    const captured = capture("Shared question", 1);
+    const first = await service.createNode({ projectId: firstProject.id, ...captured });
+    const firstDuplicate = await service.createNode({ projectId: firstProject.id, ...captured });
+    const second = await service.createNode({ projectId: secondProject.id, ...captured });
+
+    expect(firstDuplicate.id).toBe(first.id);
+    expect(second.id).not.toBe(first.id);
+    expect(await database.nodes.count()).toBe(2);
+  });
+
+  it("consumes a matching candidate in the current project during linear import", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const candidate = await service.createCandidate(project.id, capture("Inbox question", 1));
+
+    const result = await service.importLinearQuestions(project.id, [capture("Inbox question", 1)]);
+
+    expect(result).toMatchObject({ createdCount: 1, skippedCount: 0 });
+    expect(await service.candidates.get(candidate.id)).toBeUndefined();
+    expect(await service.nodes.listForProject(project.id)).toHaveLength(1);
+  });
+
+  it("rolls back the whole linear import when any question is invalid", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const candidate = await service.createCandidate(project.id, capture("Inbox question", 1));
+
+    await expect(service.importLinearQuestions(project.id, [
+      capture("Inbox question", 1),
+      { ...capture("Invalid", 2), question: "   " },
+    ])).rejects.toThrow();
+
+    expect(await service.nodes.listForProject(project.id)).toEqual([]);
+    expect(await service.candidates.get(candidate.id)).toBeDefined();
   });
 
   it("deletes a project together with its graph, inbox and relation events", async () => {
@@ -259,6 +385,53 @@ describe("DiscussionService v0.5", () => {
     expect(restored?.parentId).toBe(root.id);
     expect(restored?.status).toBe("parked");
     expect((await service.projects.get(project.id))?.focusNodeId).toBe(child.id);
+  });
+
+  it("migrates global message uniqueness to project-scoped uniqueness", async () => {
+    const legacyName = `legacy-v6-${crypto.randomUUID()}`;
+    const legacy = new Dexie(legacyName);
+    legacy.version(6).stores({
+      projects: "id, updatedAt",
+      nodes:
+        "id, projectId, parentId, status, [projectId+status], &[chatId+messageId], chatId, createdAt, updatedAt",
+      candidates: "id, projectId, status, &[chatId+messageId], chatId, createdAt, updatedAt",
+      nodeEvents: "id, projectId, nodeId, type, source, createdAt, undoneAt",
+    });
+    const now = Date.now();
+    await legacy.table("projects").add({
+      id: "project-old",
+      title: "Old project",
+      goal: "Goal",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await legacy.table("nodes").add({
+      id: "node-old",
+      projectId: "project-old",
+      parentId: null,
+      question: "Shared question",
+      summary: "Shared question",
+      status: "active",
+      chatId: "chat-1",
+      messageId: "message-1",
+      createdAt: now,
+      updatedAt: now,
+    });
+    legacy.close();
+
+    const migrated = new DiscussionMapDatabase(legacyName);
+    const migratedService = new DiscussionService(migrated);
+    const secondProject = await migratedService.createProject("Second", "Goal");
+    const duplicateAcrossProjects = await migratedService.createNode({
+      projectId: secondProject.id,
+      ...capture("Shared question", 1),
+    });
+
+    expect(await migrated.nodes.get("node-old")).toBeDefined();
+    expect(duplicateAcrossProjects.projectId).toBe(secondProject.id);
+    expect(await migrated.nodes.count()).toBe(2);
+    migrated.close();
+    await migrated.delete();
   });
 
   it("migrates v0.4 Branch data and removes legacy knowledge/sync tables", async () => {

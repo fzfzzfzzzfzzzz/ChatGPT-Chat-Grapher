@@ -7,6 +7,7 @@ import {
   GripVertical,
   List,
   Minus,
+  Network,
   Pause,
   Play,
   Plus,
@@ -25,13 +26,17 @@ import {
 } from "react";
 import { browser } from "wxt/browser";
 import { getConversationId } from "../../adapters/chatgpt/getConversation";
-import { getLatestCapturedQuestion } from "../../adapters/chatgpt/questionCapture";
+import {
+  getCapturedQuestions,
+  getLatestCapturedQuestion,
+} from "../../adapters/chatgpt/questionCapture";
 import {
   hasRecognizedNewQuestion,
   shouldResetFloatingPanelSelection,
 } from "../../graph/floatingPanelSelection";
 import { CompactProjectGraph } from "./CompactProjectGraph";
 import {
+  type BuildCurrentPageGraphResponse,
   type CaptureQuestionResponse,
   type ConversationOpenMode,
   type ExtensionMessage,
@@ -101,6 +106,7 @@ export function FloatingNavigationPanel() {
   const [deletingProjectId, setDeletingProjectId] = useState<string>();
   const [togglingCapture, setTogglingCapture] = useState(false);
   const [manualCapturing, setManualCapturing] = useState(false);
+  const [buildingGraph, setBuildingGraph] = useState(false);
   const [ignoringCurrent, setIgnoringCurrent] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [confirmingNodeDelete, setConfirmingNodeDelete] = useState(false);
@@ -597,6 +603,39 @@ export function FloatingNavigationPanel() {
     }
   }
 
+  async function buildCurrentPageGraph() {
+    setBuildingGraph(true);
+    setError(undefined);
+    setNotice(undefined);
+    closeProjectMenu();
+    try {
+      const capturedQuestions = getCapturedQuestions();
+      if (!capturedQuestions.length) {
+        setError("当前页面没有可建图的用户问题。");
+        return;
+      }
+      const response = (await browser.runtime.sendMessage({
+        type: "BUILD_CURRENT_PAGE_GRAPH",
+        capturedQuestions,
+      } satisfies ExtensionMessage)) as BuildCurrentPageGraphResponse;
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
+      setGraphSelection(response.activeNodeId);
+      await loadFloatingPanelState(response.activeNodeId);
+      setNotice(
+        response.createdCount > 0
+          ? `已新增 ${response.createdCount} 个节点，忽略 ${response.skippedCount} 个已有节点。`
+          : "没有新增节点，已聚焦到当前页面最后一个问题。",
+      );
+    } catch {
+      setError("一键建图失败，请重试。");
+    } finally {
+      setBuildingGraph(false);
+    }
+  }
+
   async function ignoreCurrentQuestion() {
     if (!state.currentNodeId && !state.currentCandidateId) return;
     setIgnoringCurrent(true);
@@ -877,7 +916,7 @@ export function FloatingNavigationPanel() {
             type="button"
             title={manualCapturing ? "正在补录最近问题" : "补录最近问题"}
             aria-label="补录当前对话的最近一个问题"
-            disabled={manualCapturing}
+            disabled={manualCapturing || buildingGraph}
             onClick={() => void captureLatestQuestion()}
           >
             <RefreshCw
@@ -936,6 +975,21 @@ export function FloatingNavigationPanel() {
             <GitBranch size={13} aria-hidden="true" />
             图视角
           </button>
+          <button
+            className="chat-graph-view-tabs__build"
+            type="button"
+            title={buildingGraph ? "正在读取完整会话并建图" : "将当前页面的所有问题生成线性图"}
+            aria-label="将当前页面的所有问题一键建图"
+            disabled={buildingGraph || manualCapturing}
+            onClick={() => void buildCurrentPageGraph()}
+          >
+            <Network
+              className={buildingGraph ? "is-spinning" : undefined}
+              size={13}
+              aria-hidden="true"
+            />
+            {buildingGraph ? "读取并建图…" : "一键建图"}
+          </button>
         </nav>
 
         {!state.captureEnabled ? (
@@ -944,7 +998,7 @@ export function FloatingNavigationPanel() {
             <span><strong>捕获已暂停</strong>你发送的新内容不会加入项目</span>
             <button
               type="button"
-              disabled={manualCapturing}
+              disabled={manualCapturing || buildingGraph}
               onClick={() => void captureLatestQuestion()}
             >
               {manualCapturing ? "补录中…" : "补录最近问题"}

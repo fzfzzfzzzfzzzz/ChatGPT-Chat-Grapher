@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   fingerprintMessageText,
+  getCapturedQuestions,
   locateQuestionMessage,
 } from "../adapters/chatgpt/questionCapture";
 import type { MessageLocator } from "../types/domain";
@@ -90,6 +91,46 @@ describe("locateQuestionMessage", () => {
       locator({ messageId: "placeholder-request-1" }),
       root,
     )).toBe("anchor");
+  });
+
+});
+
+describe("getCapturedQuestions", () => {
+  it("captures every user question in page order with stable locators", () => {
+    vi.stubGlobal("location", { href: "https://chatgpt.com/c/chat-1" });
+    vi.stubGlobal("document", { title: "Imported discussion | ChatGPT" });
+    const { root } = fixture(
+      ["  First\nquestion  ", "Second question"],
+      ["message-1", undefined],
+    );
+
+    const captured = getCapturedQuestions(root);
+
+    expect(captured).toHaveLength(2);
+    expect(captured.map((item) => item.question)).toEqual([
+      "First question",
+      "Second question",
+    ]);
+    expect(captured[0]).toMatchObject({
+      chatId: "chat-1",
+      messageId: "message-1",
+      messageAnchor: `user:0:${fingerprintMessageText("First question")}`,
+      messageLocator: {
+        version: 1,
+        ordinal: 0,
+        messageId: "message-1",
+      },
+    });
+    expect(captured[1]?.messageId).toBe("turn-1");
+    expect(captured[1]?.messageLocator?.ordinal).toBe(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("returns no questions outside a loaded conversation", () => {
+    vi.stubGlobal("location", { href: "https://chatgpt.com/" });
+    vi.stubGlobal("document", { title: "ChatGPT" });
+    expect(getCapturedQuestions(fixture(["Question"]).root)).toEqual([]);
+    vi.unstubAllGlobals();
   });
 
 });

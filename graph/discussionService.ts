@@ -28,6 +28,12 @@ export type UpdateNodeInput = {
   parentId?: string | null;
 };
 
+export type LinearGraphImportResult = {
+  createdCount: number;
+  skippedCount: number;
+  activeNodeId: string;
+};
+
 export class DiscussionService {
   readonly projects: ProjectRepository;
   readonly nodes: NodeRepository;
@@ -75,24 +81,28 @@ export class DiscussionService {
     captured: CapturedQuestion,
   ): Promise<QuestionCandidate | QuestionNode> {
     const existingNode = await this.nodes.findByMessage(
+      projectId,
       captured.chatId,
       captured.messageId,
     );
     if (existingNode) return existingNode;
     if (captured.messageAnchor) {
       const existingNodeByAnchor = await this.nodes.findByAnchor(
+        projectId,
         captured.chatId,
         captured.messageAnchor,
       );
       if (existingNodeByAnchor) return existingNodeByAnchor;
     }
     const existingCandidate = await this.candidates.findByMessage(
+      projectId,
       captured.chatId,
       captured.messageId,
     );
     if (existingCandidate) return existingCandidate;
     if (captured.messageAnchor) {
       const existingCandidateByAnchor = await this.candidates.findByAnchor(
+        projectId,
         captured.chatId,
         captured.messageAnchor,
       );
@@ -189,12 +199,14 @@ export class DiscussionService {
         const project = await this.projects.get(input.projectId);
         if (!project) throw new Error("Project not found.");
         const existing = await this.nodes.findByMessage(
+          input.projectId,
           input.chatId,
           input.messageId,
         );
         if (existing) return existing;
         if (input.messageAnchor) {
           const existingByAnchor = await this.nodes.findByAnchor(
+            input.projectId,
             input.chatId,
             input.messageAnchor,
           );
@@ -230,6 +242,86 @@ export class DiscussionService {
         });
         await this.projects.update(input.projectId, { focusNodeId: node.id });
         return node;
+      },
+    );
+  }
+
+  async importLinearQuestions(
+    projectId: string,
+    capturedQuestions: CapturedQuestion[],
+  ): Promise<LinearGraphImportResult> {
+    if (!capturedQuestions.length) throw new Error("No questions to import.");
+
+    return this.database.transaction(
+      "rw",
+      [this.database.projects, this.database.nodes, this.database.candidates],
+      async () => {
+        const project = await this.projects.get(projectId);
+        if (!project) throw new Error("Project not found.");
+
+        const createdNodes: QuestionNode[] = [];
+        let skippedCount = 0;
+        let previousCreatedNodeId: string | null = null;
+        let finalNode: QuestionNode | undefined;
+
+        for (const [index, captured] of capturedQuestions.entries()) {
+          const question = requireText(captured.question, "Question");
+          const chatId = requireText(captured.chatId, "Chat ID");
+          const messageId = requireText(captured.messageId, "Message ID");
+          const existing = await this.nodes.findByMessage(projectId, chatId, messageId) ??
+            (captured.messageAnchor
+              ? await this.nodes.findByAnchor(projectId, chatId, captured.messageAnchor)
+              : undefined);
+          const candidate = await this.candidates.findByMessage(projectId, chatId, messageId) ??
+            (captured.messageAnchor
+              ? await this.candidates.findByAnchor(projectId, chatId, captured.messageAnchor)
+              : undefined);
+
+          if (candidate) await this.candidates.delete(candidate.id);
+
+          if (existing) {
+            skippedCount += 1;
+            if (index === capturedQuestions.length - 1) finalNode = existing;
+            continue;
+          }
+
+          const node = await this.nodes.create({
+            projectId,
+            parentId: previousCreatedNodeId,
+            question,
+            summary: fallbackSummary(question),
+            status: "pending",
+            chatId,
+            messageId,
+            ...(captured.messageAnchor ? { messageAnchor: captured.messageAnchor } : {}),
+            ...(captured.messageLocator ? { messageLocator: captured.messageLocator } : {}),
+          });
+          createdNodes.push(node);
+          previousCreatedNodeId = node.id;
+          if (index === capturedQuestions.length - 1) finalNode = node;
+        }
+
+        if (!finalNode) throw new Error("The latest question could not be imported.");
+
+        const oldActive = await this.nodes.getActive(projectId);
+        if (oldActive && oldActive.id !== finalNode.id) {
+          await this.nodes.update(oldActive.id, { status: "pending" });
+        }
+        for (const node of createdNodes) {
+          await this.nodes.update(node.id, {
+            status: node.id === finalNode.id ? "active" : "resolved",
+          });
+        }
+        if (!createdNodes.some((node) => node.id === finalNode.id)) {
+          await this.nodes.update(finalNode.id, { status: "active" });
+        }
+        await this.projects.update(projectId, { focusNodeId: finalNode.id });
+
+        return {
+          createdCount: createdNodes.length,
+          skippedCount,
+          activeNodeId: finalNode.id,
+        };
       },
     );
   }

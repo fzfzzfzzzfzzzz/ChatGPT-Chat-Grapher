@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-discussion-map",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "A local-first question graph for navigating complex ChatGPT discussions.",

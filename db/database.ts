@@ -152,6 +152,14 @@ export class DiscussionMapDatabase extends Dexie {
       syncQueue: null,
     });
 
+    this.version(7).stores({
+      projects: "id, updatedAt",
+      nodes:
+        "id, projectId, parentId, status, [projectId+status], &[projectId+chatId+messageId], [projectId+chatId], chatId, createdAt, updatedAt",
+      candidates:
+        "id, projectId, status, &[projectId+chatId+messageId], [projectId+chatId], chatId, createdAt, updatedAt",
+      nodeEvents: "id, projectId, nodeId, type, source, createdAt, undoneAt",
+    });
   }
 }
 

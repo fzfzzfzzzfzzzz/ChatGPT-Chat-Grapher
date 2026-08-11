@@ -2,7 +2,7 @@
 
 Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保存第二份聊天内容，而是自动捕获用户实际发送的问题，维护 Question Tree / Forest，并帮助用户随时看见当前路径、未完成分支和原始消息位置。
 
-当前代码对应 **v0.7.0 — Graph Interaction**。
+当前代码对应 **v0.8.0 — One-click Page Graph**。
 
 ## 当前能力
 
@@ -11,7 +11,8 @@ Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保
 - 页面内常驻 V0.6 浮窗，工作态默认只显示 Parent / Current 问题，两者的 Summary 可分别展开或收起
 - 浮窗支持 Parent 导航、候选确认、搜索并人工 Change Parent、Root / No Parent
 - 支持 Header 拖动、位置/模式记忆、浅色/深色与 ChatGPT SPA 会话切换
-- 浮窗支持“当前”和“图视角”切换
+- 浮窗支持“当前”和“图视角”切换，一键建图按钮在两个视角中常驻
+- 一键读取当前 ChatGPT 会话的全部用户问题，按顺序建立独立的线性问题图
 - 浮窗图和完整图的节点右键菜单支持查看详情、标记状态和删除节点
 - Node 用户内容严格为 `question / summary / status`
 - 百炼生成简短 summary，并根据逻辑关系推荐父节点
@@ -82,7 +83,7 @@ entrypoints/   background、ChatGPT content script、side panel
 adapters/      Chat URL、提交捕获、message identity 与原消息定位
 ai/            Parent Recommendation prompt、schema parser、百炼客户端
 graph/         Question service、Current Path/Open Branches、Graph 布局
-db/            v0.5–v0.6 schema、旧数据 migration 与 repositories
+db/            v0.5–v0.7 schema、旧数据 migration 与 repositories
 components/    Current Path、Inbox、Graph、Node Detail UI
 settings/      本地 AI 配置
 tests/         领域、解析、URL 与 100 Node Graph 回归测试
