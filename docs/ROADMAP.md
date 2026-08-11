@@ -1,6 +1,6 @@
 # Chat Graph — Roadmap
 
-> 文档版本：2026-08 · 当前产品版本：v0.8.1
+> 文档版本：2026-08 · 当前产品版本：v0.9.0
 
 ## 产品定位
 
@@ -48,7 +48,7 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 - Manual Parent Correction、Remove Parent、Set as Root 与循环保护
 - 持久化 Current Focus；默认展示 Current Path
 - Parent / Main Thread 只切换焦点，不改历史父子关系
-- Open Branches 展示附近 pending / parked sibling 与 child
+- Open Branches 展示附近仍为“待讨论”的 sibling 与 child
 - Graph View 高亮焦点和 Current Path，支持折叠子树
 - Node 保存 Chat/message anchor，并可回到原 ChatGPT 消息
 - Dexie / IndexedDB 本地持久化与旧 v0.4 数据迁移
@@ -68,7 +68,7 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 - `↗` 打开完整 Graph 详情页；浮窗不复制项目级管理功能
 - 支持 Header 拖动、viewport 边界约束，以及 mode / x / y 刷新恢复
 - Header 项目名可直接切换或快速新建项目；`Change Parent` 与 Parent 信息就近放置
-- Parent 问题点击用于切换 discussion focus，并在浮窗内显示“已聚焦”反馈；不再保留容易误解的底部 Parent 动作栏
+- Parent 问题点击用于展开摘要；“查看父节点”只切换浮窗详情，不修改 discussion focus
 - ChatGPT SPA 路由切换后按 chatId 重载 Current / Parent，空 Chat 不残留上一段会话状态
 - 支持浅色 / 深色、长文本截断、键盘焦点和减弱动画偏好
 - Graph 与浮窗图谱首次单击设为 Current，再次单击确认定位原问题；右键只更新节点状态。跨会话时优先复用已有标签页，未打开时由用户选择打开方式
@@ -94,6 +94,17 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 
 - 修复长会话只捕获最近问题的问题。
 - 修复图视角删除后切回当前视角，以及当前视角底部留白丢失的问题。
+
+### v0.9.0 — Multi-provider AI API
+
+- 百炼、OpenAI、Gemini、DeepSeek、OpenRouter 与自定义服务统一使用 OpenAI Chat Completions 兼容层。
+- Anthropic 使用原生 Messages API，所有厂商共享同一父节点推荐 schema 和错误处理。
+- 每个厂商独立保存 Key 与模型，旧百炼配置自动迁移。
+- 设置页支持精确域名授权、建议模型和完整推荐连接测试；失败时不自动切换厂商。
+- 浮窗以 Current 为第一视觉层级，父节点压缩为单行上下文，常用与危险操作统一进入节点菜单。
+- 浮窗“图视角”展示项目全部节点，支持按钮/滚轮缩放、拖动画布和适应全部节点；侧栏继续提供完整管理视图。
+- 捕获暂停状态压缩为单行提示，当前交互操作统一使用中文文案。
+- 浮窗数据操作统一经过后台命令层，并在成功响应中直接携带最新状态；候选问题也可定位原消息。
 
 ## 后续优先级
 

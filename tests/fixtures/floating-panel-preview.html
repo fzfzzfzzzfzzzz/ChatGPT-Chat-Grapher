@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chat Graph v0.8.1 Floating Panel Preview</title>
+    <title>Chat Graph v0.9.0 Floating Panel Preview</title>
     <style>
       * { box-sizing: border-box; }
       body {
@@ -41,10 +41,12 @@
   <body>
     <main>
       <h1>Persistent Floating Navigation Panel</h1>
-      <p class="lede">V0.6 visual states · light / dark · long-text behavior</p>
+      <p class="lede">V0.9 Current-first · local graph · unified node actions</p>
       <div class="grid">
         <section class="stage"><span class="stage-label">WORKING · LIGHT</span><chat-graph-preview variant="working"></chat-graph-preview></section>
         <section class="stage"><span class="stage-label">GRAPH VIEW · ONE-CLICK BUILD</span><chat-graph-preview variant="graph"></chat-graph-preview></section>
+        <section class="stage"><span class="stage-label">UNIFIED NODE MENU</span><chat-graph-preview variant="menu"></chat-graph-preview></section>
+        <section class="stage"><span class="stage-label">CAPTURE PAUSED · COMPACT</span><chat-graph-preview variant="paused"></chat-graph-preview></section>
         <section class="stage"><span class="stage-label">PARENT CONFIRMATION</span><chat-graph-preview variant="selecting"></chat-graph-preview></section>
         <section class="stage"><span class="stage-label">COLLAPSED</span><chat-graph-preview variant="collapsed"></chat-graph-preview></section>
         <section class="stage"><span class="stage-label">PROJECT SWITCHER</span><chat-graph-preview variant="projects"></chat-graph-preview></section>
@@ -59,32 +61,36 @@
         down: '<path d="m6 9 6 6 6-6"/>',
         minus: '<path d="M5 12h14"/>',
         external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
-        arrowDown: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+        arrowUp: '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
         arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
         list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
         branch: '<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
         network: '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3h14v3"/><path d="M12 12V8"/>',
-        check: '<path d="m20 6-11 11-5-5"/>'
+        check: '<path d="m20 6-11 11-5-5"/>',
+        more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'
       };
       class Preview extends HTMLElement {
         connectedCallback() {
           const shadow = this.attachShadow({ mode: "open" });
           const theme = this.classList.contains("dark") ? "dark" : "light";
           const variant = this.getAttribute("variant");
-          shadow.innerHTML = `<style>${css}.chat-graph-panel{position:relative;top:auto;right:auto;margin:62px 20px 0 auto}</style>${variant === "collapsed" ? this.collapsed(theme) : this.working(variant === "selecting", theme, variant === "projects" || variant === "newproject", variant === "newproject", variant === "graph")}`;
+          shadow.innerHTML = `<style>${css}.chat-graph-panel{position:relative;top:auto;right:auto;margin:62px 20px 0 auto}</style>${variant === "collapsed" ? this.collapsed(theme) : this.working(variant === "selecting", theme, variant === "projects" || variant === "newproject", variant === "newproject", variant === "graph", variant === "menu", variant === "paused")}`;
         }
         collapsed(theme) {
-          return `<section class="chat-graph-panel chat-graph-panel--collapsed" data-theme="${theme}"><button class="chat-graph-collapsed" type="button"><span class="chat-graph-collapsed__project">Chat Graph</span><span class="chat-graph-collapsed__divider">·</span><span class="chat-graph-collapsed__parent">Parent: 插件悬浮窗应该采用什么形式？</span>${icon(paths.down)}</button></section>`;
+          return `<section class="chat-graph-panel chat-graph-panel--collapsed" data-theme="${theme}"><button class="chat-graph-collapsed" type="button"><span class="chat-graph-collapsed__project">Chat Graph</span><span class="chat-graph-collapsed__divider">·</span><span class="chat-graph-collapsed__parent">当前：悬浮窗应该放什么内容？</span>${icon(paths.down)}</button></section>`;
         }
-        working(selecting, theme, projectsOpen, newProjectOpen, graphView) {
+        working(selecting, theme, projectsOpen, newProjectOpen, graphView, menuOpen, paused) {
           const projectList = `<div class="chat-graph-project-menu__label">PROJECTS</div><button aria-checked="true"><span>Chat Graph</span>${icon(paths.check,14)}</button><button><span>V0.2 PRD 整理</span></button><button><span>浏览器插件联合开发</span></button><div class="chat-graph-project-menu__divider"></div><button class="chat-graph-project-menu__create"><span>＋ 新建项目</span></button>`;
           const projectForm = `<form class="chat-graph-project-form"><div class="chat-graph-project-menu__label">NEW PROJECT</div><label><span>项目名称</span><input value="产品发布计划"></label><label><span>核心目标（可选）</span><textarea rows="2" placeholder="这次讨论最终要解决什么？"></textarea></label><div class="chat-graph-project-form__actions"><button>取消</button><button class="is-primary">创建并切换</button></div></form>`;
           const projectMenu = projectsOpen ? `<div class="chat-graph-project-menu">${newProjectOpen ? projectForm : projectList}</div>` : "";
           const header = `<header class="chat-graph-header"><div class="chat-graph-project-switcher"><button class="chat-graph-header__brand" aria-expanded="${projectsOpen}"><span class="chat-graph-header__mark"></span><span>Chat Graph</span>${icon(paths.down,14)}</button>${projectMenu}</div><div class="chat-graph-header__actions"><button>${icon(paths.minus,16)}</button><button>${icon(paths.external)}</button></div></header>`;
-          const tabs = `<nav class="chat-graph-view-tabs"><button class="${graphView ? "" : "is-active"}">${icon(paths.list,13)}当前</button><button class="${graphView ? "is-active" : ""}">${icon(paths.branch,13)}图视角</button><button class="chat-graph-view-tabs__build">${icon(paths.network,13)}一键建图</button></nav>`;
-          const graph = `<div class="chat-graph-panel__body"><div style="height:260px;display:grid;place-items:center;color:#817f78;font-size:11px">Graph canvas · second root preview</div></div>`;
-          const standard = `<div class="chat-graph-panel__body"><section class="chat-graph-section chat-graph-section--parent"><div class="chat-graph-section__heading"><div class="chat-graph-label">PARENT</div><div class="chat-graph-section__actions"><button class="chat-graph-summary-toggle">${icon(paths.down,13)}摘要</button><button class="chat-graph-inline-action">Change Parent</button></div></div><button class="chat-graph-copy chat-graph-copy--parent"><span class="chat-graph-copy__text">插件悬浮窗应该采用什么形式？</span></button></section><div class="chat-graph-connector"><span></span>${icon(paths.arrowDown,14)}</div><section class="chat-graph-section chat-graph-section--current"><div class="chat-graph-section__heading"><div class="chat-graph-label">CURRENT</div><button class="chat-graph-summary-toggle">${icon(paths.down,13)}摘要</button></div><p class="chat-graph-copy chat-graph-copy--current">悬浮窗应该放什么内容？</p></section></div>`;
-          const choice = `<div class="chat-graph-panel__body"><section class="chat-graph-parent-editor is-compact"><div class="chat-graph-parent-editor__title"><div><div class="chat-graph-label">SELECT PARENT</div></div></div><div class="chat-graph-parent-options"><label class="chat-graph-parent-option"><input type="radio" checked><span>插件悬浮窗应该采用什么形式？</span><small>78%</small></label><label class="chat-graph-parent-option"><input type="radio"><span>插件整体 UI 设计</span><small>66%</small></label><label class="chat-graph-parent-option"><input type="radio"><span>No Parent / Root</span><small>15%</small></label></div><div class="chat-graph-parent-editor__actions"><button class="is-primary">${icon(paths.check,14)} Confirm</button></div></section><section class="chat-graph-section chat-graph-section--current" style="margin-bottom:14px"><div class="chat-graph-label">CURRENT</div><p class="chat-graph-copy chat-graph-copy--current">悬浮窗应该放什么内容？</p></section></div>`;
+          const tabs = `<nav class="chat-graph-view-tabs"><button class="${graphView ? "" : "is-active"}">${icon(paths.list,13)}当前</button><button class="${graphView ? "is-active" : ""}">${icon(paths.branch,13)}局部图</button><button class="chat-graph-view-tabs__build">${icon(paths.network,13)}一键建图</button></nav>`;
+          const graph = `<div class="chat-graph-panel__body chat-graph-panel__body--graph"><section class="chat-graph-map"><div class="chat-graph-map__canvas" style="display:grid;place-items:center;color:#817f78;font-size:11px">以 Current 为中心的两层局部图</div><footer class="chat-graph-map__footer"><span>局部显示 6 / 15 个节点</span><button>查看完整图 →</button></footer></section></div>`;
+          const menuItems = `<div class="chat-graph-node-actions__menu"><button>查看摘要</button><button>定位原文</button><button>更换父节点</button><button class="is-danger">忽略此节点</button></div>`;
+          const currentMenu = `<div class="chat-graph-node-actions"><button class="chat-graph-node-actions__trigger" aria-expanded="${menuOpen}">${icon(paths.more,16)}</button>${menuOpen ? menuItems : ""}</div>`;
+          const parentMenu = `<div class="chat-graph-node-actions"><button class="chat-graph-node-actions__trigger">${icon(paths.more,16)}</button></div>`;
+          const standard = `<div class="chat-graph-panel__body chat-graph-panel__body--current">${paused ? `<div class="chat-graph-capture-paused">⚠<strong>捕获已暂停</strong><button>选择问题</button></div>` : ""}<section class="chat-graph-section chat-graph-section--current"><div class="chat-graph-section__heading"><div class="chat-graph-label chat-graph-label--current">CURRENT</div>${currentMenu}</div><p class="chat-graph-copy chat-graph-copy--current">悬浮窗应该放什么内容？</p></section><div class="chat-graph-connector chat-graph-connector--reverse"><span></span>${icon(paths.arrowUp,14)}</div><section class="chat-graph-section chat-graph-section--parent"><div class="chat-graph-section__heading"><div class="chat-graph-label">PARENT</div>${parentMenu}</div><button class="chat-graph-copy chat-graph-copy--parent"><span class="chat-graph-copy__text">插件悬浮窗应该采用什么形式？</span></button></section></div>`;
+          const choice = `<div class="chat-graph-panel__body chat-graph-panel__body--current"><section class="chat-graph-section chat-graph-section--current chat-graph-section--selection-current"><div class="chat-graph-section__heading"><div class="chat-graph-label chat-graph-label--current">CURRENT</div>${currentMenu}</div><p class="chat-graph-copy chat-graph-copy--current">悬浮窗应该放什么内容？</p></section><section class="chat-graph-parent-editor is-compact"><div class="chat-graph-parent-editor__title"><div><div class="chat-graph-label">选择父节点</div></div></div><div class="chat-graph-parent-options"><label class="chat-graph-parent-option"><input type="radio" checked><span>插件悬浮窗应该采用什么形式？</span><small>78%</small></label><label class="chat-graph-parent-option"><input type="radio"><span>插件整体 UI 设计</span><small>66%</small></label><label class="chat-graph-parent-option"><input type="radio"><span>无父节点 / 新根节点</span><small>15%</small></label></div><div class="chat-graph-parent-editor__actions"><button class="is-primary">${icon(paths.check,14)} 确认</button></div></section></div>`;
           return `<section class="chat-graph-panel chat-graph-panel--working" data-theme="${theme}">${header}${tabs}${graphView ? graph : selecting ? choice : standard}</section>`;
         }
       }

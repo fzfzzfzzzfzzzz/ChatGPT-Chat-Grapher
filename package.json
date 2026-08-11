@@ -1,9 +1,18 @@
 {
   "name": "chatgpt-discussion-map",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "A local-first question graph for navigating complex ChatGPT discussions.",
+  "license": "MIT",
+  "homepage": "https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher/issues"
+  },
   "scripts": {
     "dev": "npm run dev:chrome",
     "dev:chrome": "wxt -b chrome --mv3",
@@ -17,7 +26,8 @@
     "compile": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:bailian": "node --env-file=.env scripts/test-bailian.mjs",
+    "test:provider": "node --env-file=.env scripts/test-provider.mjs",
+    "test:bailian": "node --env-file=.env scripts/test-provider.mjs",
     "qa:preview": "node scripts/prepare-browser-preview.mjs",
     "check": "npm run compile && npm run test && npm run build",
     "postinstall": "wxt prepare"
@@ -34,12 +44,15 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^26.1.2",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitest/coverage-v8": "^4.1.10",
     "@wxt-dev/module-react": "^1.2.2",
     "fake-indexeddb": "^6.2.5",
+    "jsdom": "^26.1.0",
     "rollup": "^4.62.4",
     "typescript": "^7.0.2",
     "vite": "^8.2.1",

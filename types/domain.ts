@@ -1,9 +1,6 @@
 export type NodeStatus =
-  | "active"
   | "pending"
-  | "resolved"
-  | "parked"
-  | "rejected";
+  | "resolved";
 
 export type MessageLocator = {
   version: 1;
@@ -81,6 +78,8 @@ export type CapturedQuestion = {
   question: string;
   chatId: string;
   messageId: string;
+  /** Ephemeral AI input. Repositories intentionally do not persist this field. */
+  assistantContext?: string;
   messageAnchor?: string;
   messageLocator?: MessageLocator;
   conversationTitle?: string;
@@ -89,6 +88,7 @@ export type CapturedQuestion = {
 export type ParentRecommendationInput = {
   question: string;
   fallbackSummary: string;
+  assistantContext?: string;
   currentPath: Array<Pick<QuestionNode, "id" | "question" | "summary">>;
   candidateNodes: Array<Pick<QuestionNode, "id" | "question" | "summary" | "status">>;
 };
@@ -100,11 +100,41 @@ export type ParentRecommendation = {
   model?: string;
 };
 
-export type AISettings = {
-  enabled: boolean;
+export type AIProviderId =
+  | "bailian"
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "deepseek"
+  | "openrouter"
+  | "custom-openai";
+
+export type AITransport = "openai-chat" | "anthropic-messages";
+
+export type AIProviderProfile = {
   apiKey: string;
   baseUrl: string;
   model: string;
+};
+
+export type AIProviderDefinition = {
+  id: AIProviderId;
+  label: string;
+  transport: AITransport;
+  defaultBaseUrl: string;
+  defaultModel: string;
+  suggestedModels: readonly string[];
+  editableBaseUrl: boolean;
+  supportsJsonResponseFormat: boolean;
+  allowedHostname?: string;
+  allowedHostnameSuffix?: string;
+};
+
+export type AISettings = {
+  schemaVersion: 2;
+  enabled: boolean;
+  activeProvider: AIProviderId;
+  profiles: Partial<Record<AIProviderId, AIProviderProfile>>;
   timeoutMs: number;
   highConfidence: number;
   mediumConfidence: number;

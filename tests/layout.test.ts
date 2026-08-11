@@ -11,7 +11,7 @@ describe("questionsToFlow", () => {
       parentId: index > 1 ? `node-${Math.floor((index - 2) / 3)}` : null,
       question: `Question ${index + 1}`,
       summary: `Summary ${index + 1}`,
-      status: index === 0 ? "active" : index % 5 === 0 ? "resolved" : "pending",
+      status: index % 5 === 0 ? "resolved" : "pending",
       chatId: `chat-${Math.floor(index / 10)}`,
       messageId: `message-${index}`,
       createdAt: now + index,

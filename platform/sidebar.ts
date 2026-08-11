@@ -1,8 +1,11 @@
 import { browser } from "wxt/browser";
 
 type FirefoxSidebarAction = {
+  open(): Promise<void>;
   toggle(): Promise<void>;
 };
+
+const OPEN_FIREFOX_SIDEBAR_COMMAND = "open-chat-graph-sidebar";
 
 function getFirefoxSidebarAction(): FirefoxSidebarAction {
   const sidebarAction = (
@@ -17,6 +20,10 @@ export function initializeSidebarBehavior(): void {
     browser.action.onClicked.addListener(() => {
       void getFirefoxSidebarAction().toggle().catch(() => undefined);
     });
+    browser.commands.onCommand.addListener((command) => {
+      if (command !== OPEN_FIREFOX_SIDEBAR_COMMAND) return;
+      void getFirefoxSidebarAction().open().catch(() => undefined);
+    });
     return;
   }
 
@@ -27,15 +34,7 @@ export function initializeSidebarBehavior(): void {
 
 export async function openDiscussionDetail(tabId?: number): Promise<void> {
   if (import.meta.env.FIREFOX) {
-    // Firefox does not carry a user gesture from a content-script click through
-    // runtime messaging, so sidebarAction.open() is rejected here. Open the
-    // complete Graph surface in an extension tab instead; the toolbar action
-    // above still toggles the real Firefox sidebar.
-    await browser.tabs.create({
-      url: browser.runtime.getURL("/sidepanel.html"),
-      active: true,
-    });
-    return;
+    throw new Error("Firefox sidebar must be opened directly from an extension user gesture.");
   }
 
   if (tabId === undefined) throw new Error("Chrome tab ID is unavailable.");

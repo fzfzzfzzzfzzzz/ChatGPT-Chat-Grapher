@@ -224,11 +224,7 @@ export class DiscussionService {
           }
         }
 
-        const status = input.status ?? "active";
-        if (status === "active") {
-          const oldActive = await this.nodes.getActive(input.projectId);
-          if (oldActive) await this.nodes.update(oldActive.id, { status: "pending" });
-        }
+        const status = input.status ?? "pending";
         const node = await this.nodes.create({
           projectId: input.projectId,
           parentId,
@@ -240,6 +236,7 @@ export class DiscussionService {
           ...(input.messageAnchor ? { messageAnchor: input.messageAnchor } : {}),
           ...(input.messageLocator ? { messageLocator: input.messageLocator } : {}),
         });
+        if (parentId) await this.nodes.update(parentId, { status: "resolved" });
         await this.projects.update(input.projectId, { focusNodeId: node.id });
         return node;
       },
@@ -303,17 +300,14 @@ export class DiscussionService {
 
         if (!finalNode) throw new Error("The latest question could not be imported.");
 
-        const oldActive = await this.nodes.getActive(projectId);
-        if (oldActive && oldActive.id !== finalNode.id) {
-          await this.nodes.update(oldActive.id, { status: "pending" });
-        }
+        const allNodes = await this.nodes.listForProject(projectId);
+        const parentIds = new Set(
+          allNodes.flatMap((node) => node.parentId ? [node.parentId] : []),
+        );
         for (const node of createdNodes) {
           await this.nodes.update(node.id, {
-            status: node.id === finalNode.id ? "active" : "resolved",
+            status: parentIds.has(node.id) ? "resolved" : "pending",
           });
-        }
-        if (!createdNodes.some((node) => node.id === finalNode.id)) {
-          await this.nodes.update(finalNode.id, { status: "active" });
         }
         await this.projects.update(projectId, { focusNodeId: finalNode.id });
 
@@ -372,6 +366,7 @@ export class DiscussionService {
         }
         const beforeParentId = node.parentId;
         const updated = await this.nodes.update(nodeId, { parentId });
+        if (parentId) await this.nodes.update(parentId, { status: "resolved" });
         await this.events.create({
           projectId: node.projectId,
           nodeId,
@@ -426,22 +421,9 @@ export class DiscussionService {
   }
 
   async setStatus(nodeId: string, status: NodeStatus): Promise<QuestionNode> {
-    return this.database.transaction(
-      "rw",
-      [this.database.projects, this.database.nodes],
-      async () => {
-        const node = await this.nodes.get(nodeId);
-        if (!node) throw new Error("Question node not found.");
-        if (status === "active") {
-          const oldActive = await this.nodes.getActive(node.projectId);
-          if (oldActive && oldActive.id !== node.id) {
-            await this.nodes.update(oldActive.id, { status: "pending" });
-          }
-          await this.projects.update(node.projectId, { focusNodeId: node.id });
-        }
-        return this.nodes.update(nodeId, { status });
-      },
-    );
+    const node = await this.nodes.get(nodeId);
+    if (!node) throw new Error("Question node not found.");
+    return this.nodes.update(nodeId, { status });
   }
 
   async undoLatestAutoLink(projectId: string): Promise<QuestionNode | undefined> {
@@ -478,6 +460,9 @@ export class DiscussionService {
         for (const child of children) {
           await this.nodes.update(child.id, { parentId: node.parentId });
         }
+        if (node.parentId && children.length) {
+          await this.nodes.update(node.parentId, { status: "resolved" });
+        }
         await this.database.nodeEvents.where("nodeId").equals(nodeId).delete();
         await this.nodes.delete(nodeId);
         const project = await this.projects.get(node.projectId);
@@ -485,6 +470,40 @@ export class DiscussionService {
           if (node.parentId) await this.projects.update(node.projectId, { focusNodeId: node.parentId });
           else await this.projects.clearFocus(node.projectId);
         }
+      },
+    );
+  }
+
+  async deleteNodeWithDescendants(nodeId: string): Promise<string[]> {
+    return this.database.transaction(
+      "rw",
+      [this.database.projects, this.database.nodes, this.database.nodeEvents],
+      async () => {
+        const node = await this.nodes.get(nodeId);
+        if (!node) return [];
+        const nodes = await this.nodes.listForProject(node.projectId);
+        const childIdsByParent = new Map<string, string[]>();
+        for (const candidate of nodes) {
+          if (!candidate.parentId) continue;
+          const children = childIdsByParent.get(candidate.parentId) ?? [];
+          children.push(candidate.id);
+          childIdsByParent.set(candidate.parentId, children);
+        }
+        const deletedIds: string[] = [];
+        const pendingIds = [node.id];
+        while (pendingIds.length) {
+          const currentId = pendingIds.pop()!;
+          deletedIds.push(currentId);
+          pendingIds.push(...(childIdsByParent.get(currentId) ?? []));
+        }
+        await this.database.nodeEvents.where("nodeId").anyOf(deletedIds).delete();
+        await this.database.nodes.bulkDelete(deletedIds);
+        const project = await this.projects.get(node.projectId);
+        if (project?.focusNodeId && deletedIds.includes(project.focusNodeId)) {
+          if (node.parentId) await this.projects.update(node.projectId, { focusNodeId: node.parentId });
+          else await this.projects.clearFocus(node.projectId);
+        }
+        return deletedIds;
       },
     );
   }

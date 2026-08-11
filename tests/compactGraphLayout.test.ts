@@ -10,11 +10,11 @@ function graphNode(
     id,
     parentId,
     question: `Question ${id}`,
-    status: "active",
+    status: "pending",
   };
 }
 
-describe("compact floating-panel graph layout", () => {
+describe("floating-panel graph layout", () => {
   it("places descendants to the right and separates siblings", () => {
     const layout = layoutCompactGraph([
       graphNode("root"),
@@ -43,5 +43,16 @@ describe("compact floating-panel graph layout", () => {
       expect(node.y).toBeLessThan(layout.height);
     }
     expect(layout.edges).toEqual([]);
+  });
+
+  it("lays out every project node without applying a neighborhood filter", () => {
+    const nodes = Array.from({ length: 18 }, (_, index) =>
+      graphNode(`node-${index}`, index === 0 ? null : `node-${index - 1}`),
+    );
+
+    const layout = layoutCompactGraph(nodes);
+
+    expect(layout.nodes.map((node) => node.id)).toEqual(nodes.map((node) => node.id));
+    expect(layout.edges).toHaveLength(nodes.length - 1);
   });
 });

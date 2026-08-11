@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { layoutCompactGraph } from "../../graph/compactGraphLayout";
 import { getGraphNodeActivation } from "../../graph/graphNodeActivation";
 import { NODE_STATUS_LABELS, NODE_STATUS_OPTIONS } from "../../shared/nodeStatus";
@@ -13,8 +20,9 @@ type Props = {
   onSelectNode: (nodeId: string) => void;
   onViewNodeDetails: (nodeId: string) => void;
   onSetNodeStatus: (nodeId: string, status: NodeStatus) => Promise<boolean>;
-  onDeleteNode: (nodeId: string) => Promise<boolean>;
+  onDeleteNode: (nodeId: string, deleteDescendants?: boolean) => Promise<boolean>;
   onRequestLocateNode: (nodeId: string) => void;
+  onOpenFullGraph: () => void;
 };
 
 type TooltipState = {
@@ -30,6 +38,17 @@ type ContextMenuState = {
   y: number;
 };
 
+type GraphViewport = {
+  zoom: number;
+  x: number;
+  y: number;
+};
+
+const DEFAULT_VIEWPORT: GraphViewport = { zoom: 1, x: 0, y: 0 };
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 1.25;
+
 export function CompactProjectGraph({
   nodes,
   currentNodeId,
@@ -40,16 +59,31 @@ export function CompactProjectGraph({
   onSetNodeStatus,
   onDeleteNode,
   onRequestLocateNode,
+  onOpenFullGraph,
 }: Props) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const panRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+  } | undefined>(undefined);
   const [tooltip, setTooltip] = useState<TooltipState>();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const [updatingNodeId, setUpdatingNodeId] = useState<string>();
   const [deletingNodeId, setDeletingNodeId] = useState<string>();
-  const [confirmingDeleteNodeId, setConfirmingDeleteNodeId] = useState<string>();
+  const [confirmingDelete, setConfirmingDelete] = useState<{
+    nodeId: string;
+    deleteDescendants: boolean;
+  }>();
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const [viewport, setViewport] = useState<GraphViewport>(DEFAULT_VIEWPORT);
+  const [panning, setPanning] = useState(false);
   const layout = useMemo(() => layoutCompactGraph(nodes), [nodes]);
+  const graphStructureKey = useMemo(
+    () => nodes.map((node) => `${node.id}:${node.parentId ?? ""}`).join("|"),
+    [nodes],
+  );
   const positionedById = useMemo(
     () => new Map(layout.nodes.map((node) => [node.id, node])),
     [layout.nodes],
@@ -71,11 +105,11 @@ export function CompactProjectGraph({
       if (menuRef.current && event.composedPath().includes(menuRef.current)) return;
       setContextMenu(undefined);
       setStatusMenuOpen(false);
-      setConfirmingDeleteNodeId(undefined);
+      setConfirmingDelete(undefined);
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (confirmingDeleteNodeId) setConfirmingDeleteNodeId(undefined);
+      if (confirmingDelete) setConfirmingDelete(undefined);
       else if (statusMenuOpen) setStatusMenuOpen(false);
       else setContextMenu(undefined);
     };
@@ -85,7 +119,7 @@ export function CompactProjectGraph({
       window.removeEventListener("pointerdown", dismiss);
       window.removeEventListener("keydown", dismissOnEscape);
     };
-  }, [confirmingDeleteNodeId, contextMenu, statusMenuOpen]);
+  }, [confirmingDelete, contextMenu, statusMenuOpen]);
 
   useEffect(() => {
     if (contextMenu && !positionedById.has(contextMenu.nodeId)) {
@@ -93,21 +127,53 @@ export function CompactProjectGraph({
     }
   }, [contextMenu, positionedById]);
 
+  useEffect(() => {
+    setViewport(DEFAULT_VIEWPORT);
+    setTooltip(undefined);
+    setContextMenu(undefined);
+  }, [graphStructureKey]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return;
+      event.preventDefault();
+      zoomGraph(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+    };
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", handleWheel);
+  }, [layout.height, layout.width]);
+
+  function graphPointInCanvas(x: number, y: number) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const baseScale = Math.min(rect.width / layout.width, rect.height / layout.height);
+    if (!Number.isFinite(baseScale) || baseScale <= 0) return;
+    const offsetX = (rect.width - layout.width * baseScale) / 2;
+    const offsetY = (rect.height - layout.height * baseScale) / 2;
+    return {
+      x: offsetX + (viewport.x + x * viewport.zoom) * baseScale,
+      y: offsetY + (viewport.y + y * viewport.zoom) * baseScale,
+    };
+  }
+
   function revealNode(nodeId: string) {
     const canvas = canvasRef.current;
     const node = positionedById.get(nodeId);
     if (!canvas || !node) return;
     const rect = canvas.getBoundingClientRect();
-    const scale = Math.min(rect.width / layout.width, rect.height / layout.height);
-    const offsetX = (rect.width - layout.width * scale) / 2;
-    const offsetY = (rect.height - layout.height * scale) / 2;
-    const rawX = offsetX + node.x * scale;
-    const rawY = offsetY + node.y * scale;
+    const point = graphPointInCanvas(node.x, node.y);
+    if (!point) return;
     setTooltip({
       nodeId,
-      x: Math.min(Math.max(92, rawX), Math.max(92, rect.width - 92)),
-      y: rawY,
-      below: rawY < 70,
+      x: Math.min(Math.max(92, point.x), Math.max(92, rect.width - 92)),
+      y: point.y,
+      below: point.y < 70,
     });
   }
 
@@ -119,11 +185,10 @@ export function CompactProjectGraph({
     const node = positionedById.get(nodeId);
     if (!canvas || !node) return;
     const rect = canvas.getBoundingClientRect();
-    const scale = Math.min(rect.width / layout.width, rect.height / layout.height);
-    const offsetX = (rect.width - layout.width * scale) / 2;
-    const offsetY = (rect.height - layout.height * scale) / 2;
-    const rawX = clientPosition ? clientPosition.x - rect.left : offsetX + node.x * scale;
-    const rawY = clientPosition ? clientPosition.y - rect.top : offsetY + node.y * scale;
+    const point = clientPosition ? undefined : graphPointInCanvas(node.x, node.y);
+    if (!clientPosition && !point) return;
+    const rawX = clientPosition ? clientPosition.x - rect.left : point!.x;
+    const rawY = clientPosition ? clientPosition.y - rect.top : point!.y;
     setTooltip(undefined);
     setContextMenu({
       nodeId,
@@ -131,7 +196,92 @@ export function CompactProjectGraph({
       y: Math.min(Math.max(8, rawY), Math.max(8, rect.height - 154)),
     });
     setStatusMenuOpen(false);
-    setConfirmingDeleteNodeId(undefined);
+    setConfirmingDelete(undefined);
+  }
+
+  function zoomGraph(multiplier: number, clientPosition?: { x: number; y: number }) {
+    const canvas = canvasRef.current;
+    setTooltip(undefined);
+    setContextMenu(undefined);
+    setViewport((current) => {
+      const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, current.zoom * multiplier));
+      if (nextZoom === current.zoom) return current;
+      if (!canvas || !clientPosition) {
+        const centerX = layout.width / 2;
+        const centerY = layout.height / 2;
+        const graphX = (centerX - current.x) / current.zoom;
+        const graphY = (centerY - current.y) / current.zoom;
+        return {
+          zoom: nextZoom,
+          x: centerX - graphX * nextZoom,
+          y: centerY - graphY * nextZoom,
+        };
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const baseScale = Math.min(rect.width / layout.width, rect.height / layout.height);
+      if (!Number.isFinite(baseScale) || baseScale <= 0) return { ...current, zoom: nextZoom };
+      const offsetX = (rect.width - layout.width * baseScale) / 2;
+      const offsetY = (rect.height - layout.height * baseScale) / 2;
+      const anchorX = (clientPosition.x - rect.left - offsetX) / baseScale;
+      const anchorY = (clientPosition.y - rect.top - offsetY) / baseScale;
+      const graphX = (anchorX - current.x) / current.zoom;
+      const graphY = (anchorY - current.y) / current.zoom;
+      return {
+        zoom: nextZoom,
+        x: anchorX - graphX * nextZoom,
+        y: anchorY - graphY * nextZoom,
+      };
+    });
+  }
+
+  function beginPan(event: ReactPointerEvent<HTMLDivElement>) {
+    if (
+      event.button !== 0 ||
+      (event.target as Element).closest(
+        ".chat-graph-map-node, .chat-graph-map__controls, .chat-graph-map__context-menu",
+      )
+    ) return;
+    panRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    setTooltip(undefined);
+    setContextMenu(undefined);
+    setPanning(true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function movePan(event: ReactPointerEvent<HTMLDivElement>) {
+    const pan = panRef.current;
+    const canvas = canvasRef.current;
+    if (!pan || !canvas || pan.pointerId !== event.pointerId) return;
+    const rect = canvas.getBoundingClientRect();
+    const baseScale = Math.min(rect.width / layout.width, rect.height / layout.height);
+    if (!Number.isFinite(baseScale) || baseScale <= 0) return;
+    const deltaX = (event.clientX - pan.clientX) / baseScale;
+    const deltaY = (event.clientY - pan.clientY) / baseScale;
+    pan.clientX = event.clientX;
+    pan.clientY = event.clientY;
+    setViewport((current) => ({
+      ...current,
+      x: current.x + deltaX,
+      y: current.y + deltaY,
+    }));
+  }
+
+  function endPan(event: ReactPointerEvent<HTMLDivElement>) {
+    if (panRef.current?.pointerId !== event.pointerId) return;
+    panRef.current = undefined;
+    setPanning(false);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  }
+
+  function fitAllNodes() {
+    setViewport(DEFAULT_VIEWPORT);
+    setTooltip(undefined);
+    setContextMenu(undefined);
   }
 
   async function setNodeStatus(status: NodeStatus) {
@@ -163,10 +313,10 @@ export function CompactProjectGraph({
     setContextMenu(undefined);
   }
 
-  function requestNodeDelete() {
+  function requestNodeDelete(deleteDescendants = false) {
     if (!contextNode) return;
     setStatusMenuOpen(false);
-    setConfirmingDeleteNodeId(contextNode.id);
+    setConfirmingDelete({ nodeId: contextNode.id, deleteDescendants });
   }
 
   async function deleteNode() {
@@ -174,9 +324,9 @@ export function CompactProjectGraph({
     const nodeId = contextNode.id;
     setDeletingNodeId(nodeId);
     try {
-      if (await onDeleteNode(nodeId)) {
+      if (await onDeleteNode(nodeId, confirmingDelete?.deleteDescendants)) {
         setContextMenu(undefined);
-        setConfirmingDeleteNodeId(undefined);
+        setConfirmingDelete(undefined);
       }
     } finally {
       setDeletingNodeId(undefined);
@@ -203,80 +353,118 @@ export function CompactProjectGraph({
   }
 
   return (
-    <section className="chat-graph-map" aria-label="当前项目问题图">
+    <section className="chat-graph-map" aria-label="项目图视角">
       <div
         ref={canvasRef}
-        className="chat-graph-map__canvas"
+        className={`chat-graph-map__canvas${panning ? " is-panning" : ""}`}
         onPointerLeave={() => setTooltip(undefined)}
+        onPointerDown={beginPan}
+        onPointerMove={movePan}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
       >
         <svg
           viewBox={`0 0 ${layout.width} ${layout.height}`}
           preserveAspectRatio="xMidYMid meet"
           role="img"
-          aria-label={`当前项目共有 ${nodes.length} 个问题节点`}
+          aria-label={`图视角显示项目的全部 ${nodes.length} 个问题节点`}
         >
-          <g className="chat-graph-map__edges" aria-hidden="true">
-            {layout.edges.map((edge) => {
-              const source = positionedById.get(edge.sourceId);
-              const target = positionedById.get(edge.targetId);
-              if (!source || !target) return null;
-              const midpoint = (source.x + target.x) / 2;
-              const onCurrentPath = currentPath.has(edge.sourceId) && currentPath.has(edge.targetId);
-              return (
-                <path
-                  key={edge.id}
-                  className={onCurrentPath ? "is-current-path" : undefined}
-                  d={`M ${source.x} ${source.y} C ${midpoint} ${source.y}, ${midpoint} ${target.y}, ${target.x} ${target.y}`}
-                />
-              );
-            })}
-          </g>
-          <g className="chat-graph-map__nodes">
-            {layout.nodes.map((node) => {
-              const classes = [
-                "chat-graph-map-node",
-                `chat-graph-map-node--${node.status}`,
-                node.id === currentNodeId ? "is-current" : "",
-                node.id === focusedNodeId ? "is-focused" : "",
-                node.id === selectedNodeId ? "is-selected" : "",
-              ].filter(Boolean).join(" ");
-              return (
-                <g
-                  key={node.id}
-                  className={classes}
-                  transform={`translate(${node.x} ${node.y})`}
-                  role="button"
-                  aria-label={node.question}
-                  aria-pressed={node.id === selectedNodeId}
-                  tabIndex={0}
-                  onPointerEnter={() => revealNode(node.id)}
-                  onFocus={() => revealNode(node.id)}
-                  onBlur={() => setTooltip(undefined)}
-                  onClick={() => activateNode(node.id)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    openContextMenu(node.id, { x: event.clientX, y: event.clientY });
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
+          <g
+            className="chat-graph-map__viewport"
+            transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}
+          >
+            <g className="chat-graph-map__edges" aria-hidden="true">
+              {layout.edges.map((edge) => {
+                const source = positionedById.get(edge.sourceId);
+                const target = positionedById.get(edge.targetId);
+                if (!source || !target) return null;
+                const onCurrentPath = currentPath.has(edge.sourceId) && currentPath.has(edge.targetId);
+                return (
+                  <path
+                    key={edge.id}
+                    className={onCurrentPath ? "is-current-path" : undefined}
+                    d={`M ${source.x} ${source.y} L ${target.x} ${target.y}`}
+                  />
+                );
+              })}
+            </g>
+            <g className="chat-graph-map__nodes">
+              {layout.nodes.map((node) => {
+                const classes = [
+                  "chat-graph-map-node",
+                  `chat-graph-map-node--${node.status}`,
+                  node.id === currentNodeId ? "is-current" : "",
+                  node.id === focusedNodeId ? "is-focused" : "",
+                  node.id === selectedNodeId ? "is-selected" : "",
+                ].filter(Boolean).join(" ");
+                return (
+                  <g
+                    key={node.id}
+                    className={classes}
+                    transform={`translate(${node.x} ${node.y})`}
+                    role="button"
+                    aria-label={node.question}
+                    aria-pressed={node.id === selectedNodeId}
+                    tabIndex={0}
+                    onPointerEnter={() => revealNode(node.id)}
+                    onFocus={() => revealNode(node.id)}
+                    onBlur={() => setTooltip(undefined)}
+                    onClick={() => activateNode(node.id)}
+                    onContextMenu={(event) => {
                       event.preventDefault();
-                      activateNode(node.id);
-                    }
-                    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-                      event.preventDefault();
-                      openContextMenu(node.id);
-                    }
-                  }}
-                >
-                  <circle className="chat-graph-map-node__focus-ring" r="12" />
-                  <circle className="chat-graph-map-node__dot" r="7" />
-                  <circle className="chat-graph-map-node__hit-area" r="15" />
-                </g>
-              );
-            })}
+                      event.stopPropagation();
+                      openContextMenu(node.id, { x: event.clientX, y: event.clientY });
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        activateNode(node.id);
+                      }
+                      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                        event.preventDefault();
+                        openContextMenu(node.id);
+                      }
+                    }}
+                  >
+                    <circle className="chat-graph-map-node__focus-ring" r={node.id === currentNodeId ? 14 : 12} />
+                    <circle className="chat-graph-map-node__dot" r={node.id === currentNodeId ? 8 : 7} />
+                    <circle className="chat-graph-map-node__hit-area" r="15" />
+                  </g>
+                );
+              })}
+            </g>
           </g>
         </svg>
+
+        <div className="chat-graph-map__controls" role="group" aria-label="图视角缩放控制">
+          <button
+            type="button"
+            title="缩小"
+            aria-label="缩小图视角"
+            disabled={viewport.zoom <= MIN_ZOOM}
+            onClick={() => zoomGraph(1 / ZOOM_STEP)}
+          >
+            <ZoomOut size={14} aria-hidden="true" />
+          </button>
+          <output aria-label="当前缩放比例">{Math.round(viewport.zoom * 100)}%</output>
+          <button
+            type="button"
+            title="放大"
+            aria-label="放大图视角"
+            disabled={viewport.zoom >= MAX_ZOOM}
+            onClick={() => zoomGraph(ZOOM_STEP)}
+          >
+            <ZoomIn size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            title="适应全部节点"
+            aria-label="适应全部节点"
+            onClick={fitAllNodes}
+          >
+            <Maximize2 size={13} aria-hidden="true" />
+          </button>
+        </div>
 
         {tooltip && tooltipNode ? (
           <div
@@ -299,22 +487,24 @@ export function CompactProjectGraph({
             <div className="chat-graph-map__context-title" title={contextNode.question}>
               {contextNode.question}
             </div>
-            {confirmingDeleteNodeId === contextNode.id ? (
+            {confirmingDelete?.nodeId === contextNode.id ? (
               <div
                 className="chat-graph-map__delete-confirm"
                 role="group"
                 aria-label={`确认删除节点：${contextNode.question}`}
               >
                 <p>
-                  {nodes.some((node) => node.parentId === contextNode.id)
-                    ? "删除后，直接子节点会移动到当前父级。"
-                    : "这个节点会从本地问题图中删除。"}
+                  {confirmingDelete.deleteDescendants
+                    ? `将删除这个节点及其全部 ${countDescendants(nodes, contextNode.id)} 个子孙节点，此操作不可撤销。`
+                    : nodes.some((node) => node.parentId === contextNode.id)
+                      ? "删除后，直接子节点会移动到当前父级。"
+                      : "这个节点会从本地问题图中删除。"}
                 </p>
                 <div>
                   <button
                     type="button"
                     disabled={deletingNodeId === contextNode.id}
-                    onClick={() => setConfirmingDeleteNodeId(undefined)}
+                    onClick={() => setConfirmingDelete(undefined)}
                   >
                     取消
                   </button>
@@ -376,9 +566,18 @@ export function CompactProjectGraph({
                   type="button"
                   role="menuitem"
                   disabled={updatingNodeId === contextNode.id}
-                  onClick={requestNodeDelete}
+                  onClick={() => requestNodeDelete(false)}
                 >
                   删除节点
+                </button>
+                <button
+                  className="chat-graph-map__context-delete"
+                  type="button"
+                  role="menuitem"
+                  disabled={updatingNodeId === contextNode.id || countDescendants(nodes, contextNode.id) === 0}
+                  onClick={() => requestNodeDelete(true)}
+                >
+                  删除节点及其子节点
                 </button>
               </>
             )}
@@ -386,8 +585,8 @@ export function CompactProjectGraph({
         ) : null}
       </div>
       <footer className="chat-graph-map__footer">
-        <span>{nodes.length} 个问题</span>
-        <span>单击选择 · 再次单击定位 · 右键查看详情、标记状态或删除</span>
+        <span>全部 {nodes.length} 个节点 · 滚轮缩放 / 拖动画布</span>
+        <button type="button" onClick={onOpenFullGraph}>在侧栏打开 →</button>
       </footer>
     </section>
   );
@@ -405,4 +604,19 @@ function getAncestorPath(nodes: FloatingPanelGraphNode[], nodeId?: string): Set<
   }
 
   return path;
+}
+
+function countDescendants(nodes: FloatingPanelGraphNode[], rootId: string): number {
+  const ids = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of nodes) {
+      if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) {
+        ids.add(node.id);
+        changed = true;
+      }
+    }
+  }
+  return ids.size - 1;
 }

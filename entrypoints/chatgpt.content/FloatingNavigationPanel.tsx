@@ -1,19 +1,22 @@
 import {
-  ArrowDown,
+  ArrowUp,
   Check,
   ChevronDown,
-  ExternalLink,
   GitBranch,
   GripVertical,
   List,
   Minus,
+  MoreHorizontal,
+  MousePointer2,
   Network,
+  PanelRightOpen,
   Pause,
   Play,
   Plus,
   RefreshCw,
   Search,
   Trash2,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import {
@@ -21,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PropsWithChildren,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -28,8 +32,10 @@ import { browser } from "wxt/browser";
 import { getConversationId } from "../../adapters/chatgpt/getConversation";
 import {
   getAllCapturedQuestions,
-  getLatestCapturedQuestion,
+  getCapturedQuestionFromElement,
+  watchForRefinedMessageLocator,
 } from "../../adapters/chatgpt/questionCapture";
+import { CHATGPT_SELECTORS } from "../../adapters/chatgpt/selectors";
 import {
   hasRecognizedNewQuestion,
   shouldResetFloatingPanelSelection,
@@ -40,15 +46,22 @@ import {
   type CaptureQuestionResponse,
   type ConversationOpenMode,
   type ExtensionMessage,
+  type FloatingPanelGraphNode,
   type FloatingPanelMode,
   type FloatingPanelState,
   type NavigateToNodeResponse,
   type PanelActionResponse,
+  type PanelDeleteResult,
+  type PanelMutationResponse,
+  type PanelParentResult,
+  type PanelQuestionSource,
 } from "../../shared/messages";
 import { isExtensionMessage } from "../../shared/messages";
 import type { NodeStatus } from "../../types/domain";
 
 const PANEL_PREFERENCES_KEY = "floatingPanelPreferencesV06";
+const REQUESTED_SIDE_PANEL_VIEW_KEY = "requestedSidePanelView";
+const PAGE_QUESTION_SELECTION_ATTRIBUTE = "data-chat-graph-selecting-question";
 const VIEWPORT_GAP = 12;
 
 const EMPTY_STATE: FloatingPanelState = {
@@ -70,13 +83,16 @@ type PanelPreferences = {
 };
 
 type FloatingPanelView = "current" | "graph";
+type NodeDeleteMode = "node" | "subtree";
+
+type NavigationTarget = PanelQuestionSource & { question: string };
 
 type ParentEditorProps = {
   state: FloatingPanelState;
   compact?: boolean;
   onCancel?: () => void;
   onComplete: () => void;
-  onError: (message: string) => void;
+  onSave: (parentId: string | null) => Promise<boolean>;
 };
 
 export function FloatingNavigationPanel() {
@@ -92,6 +108,7 @@ export function FloatingNavigationPanel() {
   } | undefined>(undefined);
   const [state, setState] = useState<FloatingPanelState>(EMPTY_STATE);
   const [mode, setMode] = useState<FloatingPanelMode>("working");
+  const [dismissed, setDismissed] = useState(false);
   const [panelView, setPanelView] = useState<FloatingPanelView>("current");
   const [position, setPosition] = useState<{ x: number; y: number }>();
   const [preferencesReady, setPreferencesReady] = useState(false);
@@ -100,23 +117,24 @@ export function FloatingNavigationPanel() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectGoal, setNewProjectGoal] = useState("");
-  const [switchingProject, setSwitchingProject] = useState(false);
+  const [switchingProjectId, setSwitchingProjectId] = useState<string>();
   const [savingProject, setSavingProject] = useState(false);
   const [confirmingDeleteProjectId, setConfirmingDeleteProjectId] = useState<string>();
   const [deletingProjectId, setDeletingProjectId] = useState<string>();
   const [togglingCapture, setTogglingCapture] = useState(false);
-  const [manualCapturing, setManualCapturing] = useState(false);
+  const [selectingPageQuestion, setSelectingPageQuestion] = useState(false);
+  const [importingPageQuestion, setImportingPageQuestion] = useState(false);
   const [buildingGraph, setBuildingGraph] = useState(false);
   const [ignoringCurrent, setIgnoringCurrent] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
-  const [confirmingNodeDelete, setConfirmingNodeDelete] = useState(false);
+  const [confirmingNodeDelete, setConfirmingNodeDelete] = useState<NodeDeleteMode>();
   const [deletingNode, setDeletingNode] = useState(false);
   const [parentSummaryExpanded, setParentSummaryExpanded] = useState(false);
   const [currentSummaryExpanded, setCurrentSummaryExpanded] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const [confirmingNavigationNodeId, setConfirmingNavigationNodeId] = useState<string>();
-  const [pendingNavigationNodeId, setPendingNavigationNodeId] = useState<string>();
+  const [confirmingNavigationTarget, setConfirmingNavigationTarget] = useState<NavigationTarget>();
+  const [pendingNavigationTarget, setPendingNavigationTarget] = useState<NavigationTarget>();
   const [navigationBusy, setNavigationBusy] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(getPageTheme);
 
@@ -170,6 +188,7 @@ export function FloatingNavigationPanel() {
 
   useEffect(() => {
     const refreshForLocationChange = () => {
+      setSelectingPageQuestion(false);
       clearGraphSelection();
       setEditingParent(false);
       setPanelView("current");
@@ -197,6 +216,7 @@ export function FloatingNavigationPanel() {
         rememberLatestState(incoming);
         setError(undefined);
         if (newQuestion) {
+          setSelectingPageQuestion(false);
           panelStateRequestRef.current += 1;
           clearGraphSelection();
           setEditingParent(false);
@@ -228,6 +248,50 @@ export function FloatingNavigationPanel() {
   }, []);
 
   useEffect(() => {
+    if (!selectingPageQuestion) return;
+
+    const style = document.createElement("style");
+    style.dataset.chatGraphQuestionSelection = "true";
+    style.textContent = `
+      html[${PAGE_QUESTION_SELECTION_ATTRIBUTE}] ${CHATGPT_SELECTORS.userMessage} {
+        cursor: copy !important;
+        outline: 2px dashed rgba(15, 138, 131, 0.48) !important;
+        outline-offset: 4px !important;
+        border-radius: 8px !important;
+        transition: outline-color 120ms ease, background-color 120ms ease !important;
+      }
+      html[${PAGE_QUESTION_SELECTION_ATTRIBUTE}] ${CHATGPT_SELECTORS.userMessage}:hover {
+        outline-color: rgb(15, 138, 131) !important;
+        background: rgba(15, 138, 131, 0.1) !important;
+      }
+    `;
+    document.documentElement.setAttribute(PAGE_QUESTION_SELECTION_ATTRIBUTE, "true");
+    (document.head ?? document.documentElement).append(style);
+
+    const selectQuestion = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const message = event.target.closest<HTMLElement>(CHATGPT_SELECTORS.userMessage);
+      if (!message) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      setSelectingPageQuestion(false);
+      void captureSelectedPageQuestion(message);
+    };
+    const cancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectingPageQuestion(false);
+    };
+    document.addEventListener("click", selectQuestion, true);
+    window.addEventListener("keydown", cancelOnEscape);
+    return () => {
+      document.documentElement.removeAttribute(PAGE_QUESTION_SELECTION_ATTRIBUTE);
+      style.remove();
+      document.removeEventListener("click", selectQuestion, true);
+      window.removeEventListener("keydown", cancelOnEscape);
+    };
+  }, [selectingPageQuestion]);
+
+  useEffect(() => {
     if (!preferencesReady) return;
     const timeout = window.setTimeout(() => {
       void browser.storage.local.set({
@@ -252,6 +316,12 @@ export function FloatingNavigationPanel() {
     state.viewingNodeId,
     state.parentId,
   ]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = window.setTimeout(() => setNotice(undefined), 4_200);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
 
   useEffect(() => {
     const clampCurrentPosition = () => {
@@ -320,12 +390,48 @@ export function FloatingNavigationPanel() {
   function setGraphSelection(nodeId: string | undefined) {
     selectedNodeIdRef.current = nodeId;
     setSelectedNodeId(nodeId);
-    setConfirmingNavigationNodeId(undefined);
-    setConfirmingNodeDelete(false);
+    setConfirmingNavigationTarget(undefined);
+    setConfirmingNodeDelete(undefined);
   }
 
   function clearGraphSelection() {
     setGraphSelection(undefined);
+  }
+
+  function panelActionContext() {
+    const chatId = getConversationId(location.href);
+    const viewingNodeId = selectedNodeIdRef.current;
+    return {
+      ...(chatId ? { chatId } : {}),
+      ...(viewingNodeId ? { viewingNodeId } : {}),
+    };
+  }
+
+  function applyAuthoritativeState(nextState: FloatingPanelState) {
+    panelStateRequestRef.current += 1;
+    rememberLatestState(nextState);
+    selectedNodeIdRef.current = nextState.viewingNodeId;
+    setSelectedNodeId(nextState.viewingNodeId);
+    setState(nextState);
+  }
+
+  async function performPanelMutation<T>(
+    message: ExtensionMessage,
+    fallbackError: string,
+  ): Promise<T | undefined> {
+    setError(undefined);
+    try {
+      const response = await browser.runtime.sendMessage(message) as PanelMutationResponse<T>;
+      if (!response.ok) {
+        setError(response.error);
+        return undefined;
+      }
+      applyAuthoritativeState(response.state);
+      return response.result;
+    } catch {
+      setError(fallbackError);
+      return undefined;
+    }
   }
 
   async function loadFloatingPanelState(
@@ -369,39 +475,24 @@ export function FloatingNavigationPanel() {
     if (await selectGraphNode(nodeId)) setPanelView("current");
   }
 
-  async function focusParent() {
-    if (!state.currentNodeId || !state.parentId) return;
-    setProjectMenuOpen(false);
-    setError(undefined);
-    try {
-      const response = (await browser.runtime.sendMessage({
-        type: "FOCUS_PANEL_PARENT",
-        currentNodeId: state.currentNodeId,
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) setError(response.error);
-    } catch {
-      setError("暂时无法切换到 Parent，请重试。");
-    }
-  }
-
   async function selectProject(projectId: string) {
     if (projectId === state.projectId) {
       closeProjectMenu();
       return;
     }
-    setSwitchingProject(true);
-    setError(undefined);
+    setSwitchingProjectId(projectId);
     try {
-      const response = (await browser.runtime.sendMessage({
+      const result = await performPanelMutation<{ projectId?: string }>({
         type: "SELECT_PANEL_PROJECT",
         projectId,
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) setError(response.error);
-      else closeProjectMenu();
-    } catch {
-      setError("暂时无法切换项目，请重试。");
+        context: panelActionContext(),
+      }, "暂时无法切换项目，请重试。");
+      if (result) {
+        clearGraphSelection();
+        closeProjectMenu();
+      }
     } finally {
-      setSwitchingProject(false);
+      setSwitchingProjectId(undefined);
     }
   }
 
@@ -410,17 +501,17 @@ export function FloatingNavigationPanel() {
     const title = newProjectTitle.trim();
     if (!title) return;
     setSavingProject(true);
-    setError(undefined);
     try {
-      const response = (await browser.runtime.sendMessage({
+      const result = await performPanelMutation<{ projectId?: string }>({
         type: "CREATE_PANEL_PROJECT",
         title,
         goal: newProjectGoal.trim(),
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) setError(response.error);
-      else closeProjectMenu();
-    } catch {
-      setError("暂时无法创建项目，请重试。");
+        context: panelActionContext(),
+      }, "暂时无法创建项目，请重试。");
+      if (result) {
+        clearGraphSelection();
+        closeProjectMenu();
+      }
     } finally {
       setSavingProject(false);
     }
@@ -428,19 +519,16 @@ export function FloatingNavigationPanel() {
 
   async function deleteProject(projectId: string) {
     setDeletingProjectId(projectId);
-    setError(undefined);
     try {
-      const response = (await browser.runtime.sendMessage({
+      const result = await performPanelMutation<{ projectId?: string }>({
         type: "DELETE_PANEL_PROJECT",
         projectId,
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) {
-        setError(response.error);
-        return;
+        context: panelActionContext(),
+      }, "暂时无法删除项目，请重试。");
+      if (result) {
+        clearGraphSelection();
+        setConfirmingDeleteProjectId(undefined);
       }
-      setConfirmingDeleteProjectId(undefined);
-    } catch {
-      setError("暂时无法删除项目，请重试。");
     } finally {
       setDeletingProjectId(undefined);
     }
@@ -454,17 +542,46 @@ export function FloatingNavigationPanel() {
     setConfirmingDeleteProjectId(undefined);
   }
 
-  async function openDetail() {
+  function dismissPanel() {
+    dragRef.current = undefined;
+    setSelectingPageQuestion(false);
+    clearGraphSelection();
+    setEditingParent(false);
+    setConfirmingNavigationTarget(undefined);
+    setPendingNavigationTarget(undefined);
+    closeProjectMenu();
+    setDismissed(true);
+  }
+
+  async function openDetail(view?: "graph") {
     closeProjectMenu();
     setError(undefined);
+    setNotice(undefined);
+
+    if (import.meta.env.FIREFOX) {
+      if (view) {
+        try {
+          await browser.storage.local.set({ [REQUESTED_SIDE_PANEL_VIEW_KEY]: view });
+        } catch {
+          setError("暂时无法准备侧边栏视图，请重试。");
+          return;
+        }
+      }
+      setNotice(
+        `${view ? "完整图已准备。" : "Firefox 限制："}请点击工具栏 Chat Graph 图标，或按 Alt+Shift+G 打开侧边栏。`,
+      );
+      return;
+    }
+
     try {
       const response = (await browser.runtime.sendMessage({
         type: "OPEN_SIDE_PANEL",
         ...(state.projectId ? { projectId: state.projectId } : {}),
+        ...(view ? { view } : {}),
       } satisfies ExtensionMessage)) as PanelActionResponse;
       if (!response.ok) setError(response.error);
     } catch {
-      setError("暂时无法打开完整 Graph，请重试或点击扩展工具栏图标。");
+      setError("暂时无法打开侧边栏，请重试或点击扩展工具栏图标。");
     }
   }
 
@@ -472,70 +589,47 @@ export function FloatingNavigationPanel() {
     nodeId: string,
     status: NodeStatus,
   ): Promise<boolean> {
-    setError(undefined);
-    try {
-      const response = (await browser.runtime.sendMessage({
-        type: "SET_PANEL_NODE_STATUS",
-        nodeId,
-        status,
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) {
-        setError(response.error);
-        return false;
-      }
-      return true;
-    } catch {
-      setError("暂时无法更新节点状态，请重试。");
-      return false;
-    }
+    return Boolean(await performPanelMutation<{ nodeId: string; status: string }>({
+      type: "SET_PANEL_NODE_STATUS",
+      nodeId,
+      status,
+      context: panelActionContext(),
+    }, "暂时无法更新节点状态，请重试。"));
   }
 
-  async function deleteGraphNode(nodeId: string): Promise<boolean> {
-    setError(undefined);
+  async function deleteGraphNode(nodeId: string, deleteDescendants = false): Promise<boolean> {
     closeProjectMenu();
-    try {
-      const response = (await browser.runtime.sendMessage({
-        type: "DELETE_PANEL_NODE",
-        nodeId,
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) {
-        setError(response.error);
-        return false;
-      }
-      const retainedSelection = selectedNodeIdRef.current === nodeId
-        ? undefined
-        : selectedNodeIdRef.current;
-      if (!retainedSelection) clearGraphSelection();
-      await loadFloatingPanelState(retainedSelection);
-      return true;
-    } catch {
-      setError("暂时无法删除这个节点，请重试。");
-      return false;
-    }
+    const result = await performPanelMutation<PanelDeleteResult>({
+      type: "DELETE_PANEL_NODE",
+      nodeId,
+      ...(deleteDescendants ? { deleteDescendants: true } : {}),
+      context: panelActionContext(),
+    }, "暂时无法删除这个节点，请重试。");
+    return Boolean(result);
   }
 
-  async function navigateGraphNode(
-    nodeId: string,
+  async function navigateQuestionTarget(
+    target: NavigationTarget,
     openMode?: ConversationOpenMode,
   ): Promise<boolean> {
     setError(undefined);
     setNavigationBusy(true);
     try {
       const response = await browser.runtime.sendMessage({
-        type: "NAVIGATE_TO_NODE",
-        nodeId,
+        type: "NAVIGATE_TO_QUESTION",
+        source: { kind: target.kind, id: target.id },
         ...(openMode ? { openMode } : {}),
       } satisfies ExtensionMessage) as NavigateToNodeResponse;
       if (!response.ok) {
         if (response.status === "open_choice_required") {
-          setPendingNavigationNodeId(nodeId);
+          setPendingNavigationTarget(target);
           return true;
         }
-        setPendingNavigationNodeId(undefined);
+        setPendingNavigationTarget(undefined);
         setError(response.error);
         return false;
       }
-      setPendingNavigationNodeId(undefined);
+      setPendingNavigationTarget(undefined);
       return true;
     } catch {
       setError("暂时无法打开原会话，请重试。");
@@ -548,57 +642,18 @@ export function FloatingNavigationPanel() {
   async function toggleCaptureService() {
     const enabled = !state.captureEnabled;
     setTogglingCapture(true);
-    setError(undefined);
+    setNotice(undefined);
     try {
-      const response = (await browser.runtime.sendMessage({
+      const result = await performPanelMutation<{ captureEnabled: boolean }>({
         type: "SET_CAPTURE_SERVICE_ENABLED",
         enabled,
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) {
-        setError(response.error);
-        return;
+        context: panelActionContext(),
+      }, "暂时无法切换捕获服务，请重试。");
+      if (result) {
+        setNotice(enabled ? "问题捕获已开启。" : "问题捕获已暂停，仍可从页面选择问题加入项目。");
       }
-      setState((current) => ({ ...current, captureEnabled: enabled }));
-    } catch {
-      setError("暂时无法切换捕获服务，请重试。");
     } finally {
       setTogglingCapture(false);
-    }
-  }
-
-  async function captureLatestQuestion() {
-    setManualCapturing(true);
-    setError(undefined);
-    setNotice(undefined);
-    closeProjectMenu();
-    try {
-      const captured = getLatestCapturedQuestion();
-      if (!captured) {
-        setError("当前对话中没有可补录的用户问题。");
-        return;
-      }
-      const response = (await browser.runtime.sendMessage({
-        type: "CAPTURE_QUESTION",
-        captured,
-        manual: true,
-      } satisfies ExtensionMessage)) as CaptureQuestionResponse;
-      if (!response.ok) {
-        setError(response.error);
-        return;
-      }
-      if (response.destination === "disabled") {
-        setError("补录未执行，请重试。");
-        return;
-      }
-      setNotice(
-        response.destination === "duplicate"
-          ? "最近一个问题已经在当前项目中。"
-          : "已补录最近一个问题。",
-      );
-    } catch {
-      setError("暂时无法补录最近问题，请重试。");
-    } finally {
-      setManualCapturing(false);
     }
   }
 
@@ -616,13 +671,13 @@ export function FloatingNavigationPanel() {
       const response = (await browser.runtime.sendMessage({
         type: "BUILD_CURRENT_PAGE_GRAPH",
         capturedQuestions,
+        context: panelActionContext(),
       } satisfies ExtensionMessage)) as BuildCurrentPageGraphResponse;
       if (!response.ok) {
         setError(response.error);
         return;
       }
-      setGraphSelection(response.activeNodeId);
-      await loadFloatingPanelState(response.activeNodeId);
+      applyAuthoritativeState(response.state);
       setNotice(
         response.createdCount > 0
           ? `已新增 ${response.createdCount} 个节点，忽略 ${response.skippedCount} 个已有节点。`
@@ -638,21 +693,21 @@ export function FloatingNavigationPanel() {
   async function ignoreCurrentQuestion() {
     if (!state.currentNodeId && !state.currentCandidateId) return;
     setIgnoringCurrent(true);
-    setError(undefined);
+    setNotice("正在忽略当前问题…");
     closeProjectMenu();
     try {
-      const response = (await browser.runtime.sendMessage({
+      const result = await performPanelMutation<{ ignoredId: string; kind: "node" | "candidate" }>({
         type: "IGNORE_PANEL_CURRENT",
         ...(state.currentNodeId ? { currentNodeId: state.currentNodeId } : {}),
         ...(state.currentCandidateId ? { currentCandidateId: state.currentCandidateId } : {}),
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) {
-        setError(response.error);
-        return;
+        context: panelActionContext(),
+      }, "暂时无法忽略当前问题，请重试。");
+      if (result) {
+        setEditingParent(false);
+        setNotice("已忽略当前问题。");
+      } else {
+        setNotice(undefined);
       }
-      setEditingParent(false);
-    } catch {
-      setError("暂时无法忽略当前问题，请重试。");
     } finally {
       setIgnoringCurrent(false);
     }
@@ -660,25 +715,23 @@ export function FloatingNavigationPanel() {
 
   async function deleteViewedNode() {
     const nodeId = state.viewingNodeId;
-    if (!nodeId) return;
+    if (!nodeId || !confirmingNodeDelete) return;
     setDeletingNode(true);
-    setError(undefined);
     closeProjectMenu();
     try {
-      const response = (await browser.runtime.sendMessage({
+      const result = await performPanelMutation<PanelDeleteResult>({
         type: "DELETE_PANEL_NODE",
         nodeId,
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) {
-        setError(response.error);
-        return;
+        ...(confirmingNodeDelete === "subtree" ? { deleteDescendants: true } : {}),
+        context: panelActionContext(),
+      }, "暂时无法删除这个节点，请重试。");
+      if (result) {
+        setEditingParent(false);
+        setConfirmingNodeDelete(undefined);
+        setNotice(result.deletedNodeCount > 1
+          ? `已删除该节点及 ${result.deletedNodeCount - 1} 个子孙节点。`
+          : "节点已删除。");
       }
-      clearGraphSelection();
-      setEditingParent(false);
-      setConfirmingNodeDelete(false);
-      await loadFloatingPanelState();
-    } catch {
-      setError("暂时无法删除这个节点，请重试。");
     } finally {
       setDeletingNode(false);
     }
@@ -694,27 +747,209 @@ export function FloatingNavigationPanel() {
   const viewedNodeChildCount = state.viewingNodeId
     ? state.graphNodes.filter((node) => node.parentId === state.viewingNodeId).length
     : 0;
-  const currentAction = isViewingGraphNode ? (
-    <button
-      className="chat-graph-inline-action chat-graph-inline-action--delete"
-      type="button"
-      disabled={deletingNode}
-      title="从项目图中删除这个节点"
-      onClick={() => setConfirmingNodeDelete(true)}
-    >
-      删除节点
-    </button>
-  ) : (
-    <button
-      className="chat-graph-inline-action chat-graph-inline-action--ignore"
-      type="button"
-      disabled={ignoringCurrent || (!state.currentNodeId && !state.currentCandidateId)}
-      title="从项目图中移除此问题"
-      onClick={() => void ignoreCurrentQuestion()}
-    >
-      {ignoringCurrent ? "忽略中…" : "忽略"}
-    </button>
+  const viewedNodeDescendantCount = state.viewingNodeId
+    ? countDescendants(state.graphNodes, state.viewingNodeId)
+    : 0;
+  const canEditParent = state.parentState !== "processing" && Boolean(
+    state.currentNodeId || state.currentCandidateId,
   );
+
+  function beginParentEditing() {
+    setError(undefined);
+    setProjectMenuOpen(false);
+    setEditingParent(true);
+  }
+
+  function togglePageQuestionSelection() {
+    closeProjectMenu();
+    setError(undefined);
+    setNotice(undefined);
+    setSelectingPageQuestion((selecting) => !selecting);
+  }
+
+  async function captureSelectedPageQuestion(message: HTMLElement) {
+    setImportingPageQuestion(true);
+    setError(undefined);
+    setNotice(undefined);
+    closeProjectMenu();
+    try {
+      const captured = getCapturedQuestionFromElement(message);
+      if (!captured) {
+        setError("无法读取所选问题，请确认当前页面仍停留在该对话。");
+        return;
+      }
+
+      if (captured.messageAnchor) {
+        watchForRefinedMessageLocator(captured, (messageLocator) => {
+          void browser.runtime.sendMessage({
+            type: "REFINE_MESSAGE_LOCATOR",
+            chatId: captured.chatId,
+            messageAnchor: captured.messageAnchor!,
+            messageLocator,
+          } satisfies ExtensionMessage).catch(() => undefined);
+        });
+      }
+
+      clearGraphSelection();
+      const response = (await browser.runtime.sendMessage({
+        type: "CAPTURE_QUESTION",
+        captured,
+        manual: true,
+        context: panelActionContext(),
+      } satisfies ExtensionMessage)) as CaptureQuestionResponse;
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
+      if (response.destination === "disabled") {
+        setError("所选问题未能加入项目，请重试。");
+        return;
+      }
+
+      setPanelView("current");
+      if (response.nodeId) {
+        setGraphSelection(response.nodeId);
+        await loadFloatingPanelState(response.nodeId);
+      } else {
+        applyAuthoritativeState(response.state);
+      }
+
+      if (response.destination === "duplicate") {
+        setNotice("所选问题已经在当前项目中，已切换到对应节点。");
+      } else if (response.destination === "inbox") {
+        setNotice(captured.assistantContext
+          ? "已读取所选问题和回答，请确认它的父节点。"
+          : "已读取所选问题；未找到对应回答，请确认它的父节点。");
+      } else {
+        setNotice(captured.assistantContext
+          ? "已加入所选问题；回答仅用于本次摘要和父节点匹配。"
+          : "已加入所选问题；未找到对应回答，已仅根据问题分析。");
+      }
+    } catch {
+      setError("暂时无法加入所选问题，请重试。");
+    } finally {
+      setImportingPageQuestion(false);
+    }
+  }
+
+  async function saveCurrentParent(parentId: string | null): Promise<boolean> {
+    const result = await performPanelMutation<PanelParentResult>({
+      type: "SET_PANEL_PARENT",
+      parentId,
+      ...(state.currentNodeId ? { currentNodeId: state.currentNodeId } : {}),
+      ...(state.currentCandidateId ? { currentCandidateId: state.currentCandidateId } : {}),
+      context: panelActionContext(),
+    }, "暂时无法更新父节点，请重试。");
+    if (!result) return false;
+    setNotice(parentId ? "父节点已更新。" : "已设为新的根节点。");
+    return true;
+  }
+
+  function requestNodeNavigation(nodeId: string) {
+    const node = state.graphNodes.find((candidate) => candidate.id === nodeId);
+    if (!node) {
+      setError("该节点已经不存在，请刷新后重试。");
+      return;
+    }
+    setConfirmingNavigationTarget({ kind: "node", id: node.id, question: node.question });
+  }
+
+  function requestCurrentNavigation() {
+    if (state.currentNodeId) {
+      setConfirmingNavigationTarget({
+        kind: "node",
+        id: state.currentNodeId,
+        question: state.currentQuestion ?? "当前问题",
+      });
+      return;
+    }
+    if (state.currentCandidateId) {
+      setConfirmingNavigationTarget({
+        kind: "candidate",
+        id: state.currentCandidateId,
+        question: state.currentQuestion ?? "当前问题",
+      });
+    }
+  }
+
+  const currentActionMenu = (
+    <NodeActionMenu label="当前节点操作">
+      <button
+        type="button"
+        role="menuitem"
+        disabled={!state.currentQuestion}
+        onClick={() => setCurrentSummaryExpanded((expanded) => !expanded)}
+      >
+        {currentSummaryExpanded ? "收起摘要" : "查看摘要"}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        disabled={navigationBusy || (!state.currentNodeId && !state.currentCandidateId)}
+        onClick={requestCurrentNavigation}
+      >
+        {navigationBusy ? "正在定位…" : "定位原文"}
+      </button>
+      <button type="button" role="menuitem" disabled={!canEditParent} onClick={beginParentEditing}>
+        更换父节点
+      </button>
+      {isViewingGraphNode ? (
+        <>
+          <button
+            className="is-danger"
+            type="button"
+            role="menuitem"
+            disabled={deletingNode}
+            onClick={() => setConfirmingNodeDelete("node")}
+          >
+            删除节点
+          </button>
+          <button
+            className="is-danger"
+            type="button"
+            role="menuitem"
+            disabled={deletingNode || viewedNodeDescendantCount === 0}
+            onClick={() => setConfirmingNodeDelete("subtree")}
+          >
+            删除节点及其子节点
+          </button>
+        </>
+      ) : (
+        <button
+          className="is-danger"
+          type="button"
+          role="menuitem"
+          disabled={ignoringCurrent || (!state.currentNodeId && !state.currentCandidateId)}
+          onClick={() => void ignoreCurrentQuestion()}
+        >
+          {ignoringCurrent ? "忽略中…" : "忽略此节点"}
+        </button>
+      )}
+    </NodeActionMenu>
+  );
+
+  const parentActionMenu = (
+    <NodeActionMenu label="父节点操作">
+      <button
+        type="button"
+        role="menuitem"
+        disabled={!state.parentSummary}
+        onClick={() => setParentSummaryExpanded((expanded) => !expanded)}
+      >
+        {parentSummaryExpanded ? "收起摘要" : "查看摘要"}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        disabled={navigationBusy || !state.parentId}
+        onClick={() => state.parentId && requestNodeNavigation(state.parentId)}
+      >
+        {navigationBusy ? "正在定位…" : "定位原文"}
+      </button>
+    </NodeActionMenu>
+  );
+
+  if (dismissed) return null;
 
   if (mode === "collapsed") {
     return (
@@ -743,12 +978,19 @@ export function FloatingNavigationPanel() {
         >
           <span className="chat-graph-collapsed__project">{state.projectTitle}</span>
           <span className="chat-graph-collapsed__divider" aria-hidden="true">·</span>
-          <span className="chat-graph-collapsed__parent" title={parentLabel}>
-            {state.parentState === "root" || state.parentState === "empty"
-              ? parentLabel
-              : `Parent: ${parentLabel}`}
+          <span className="chat-graph-collapsed__parent" title={state.currentQuestion || parentLabel}>
+            {`当前：${state.currentQuestion || parentLabel}`}
           </span>
           <ChevronDown size={15} aria-hidden="true" />
+        </button>
+        <button
+          className="chat-graph-collapsed__close"
+          type="button"
+          title="关闭浮窗（刷新页面后恢复）"
+          aria-label="关闭 Chat Graph 浮窗"
+          onClick={dismissPanel}
+        >
+          <X size={14} aria-hidden="true" />
         </button>
       </section>
     );
@@ -860,10 +1102,12 @@ export function FloatingNavigationPanel() {
                           type="button"
                           role="menuitemradio"
                           aria-checked={project.id === state.projectId}
-                          disabled={switchingProject || Boolean(deletingProjectId)}
+                          disabled={Boolean(switchingProjectId) || Boolean(deletingProjectId)}
                           onClick={() => void selectProject(project.id)}
                         >
-                          <span title={project.title}>{project.title}</span>
+                          <span title={project.title}>
+                            {switchingProjectId === project.id ? `${project.title}（切换中…）` : project.title}
+                          </span>
                           {project.id === state.projectId ? <Check size={14} aria-hidden="true" /> : null}
                         </button>
                         <button
@@ -871,7 +1115,7 @@ export function FloatingNavigationPanel() {
                           type="button"
                           title={`删除项目：${project.title}`}
                           aria-label={`删除项目：${project.title}`}
-                          disabled={switchingProject || Boolean(deletingProjectId)}
+                          disabled={Boolean(switchingProjectId) || Boolean(deletingProjectId)}
                           onClick={() => setConfirmingDeleteProjectId(project.id)}
                         >
                           <Trash2 size={13} aria-hidden="true" />
@@ -900,29 +1144,21 @@ export function FloatingNavigationPanel() {
           <button
             className={`chat-graph-capture-toggle${state.captureEnabled ? " is-enabled" : " is-paused"}`}
             type="button"
-            title={state.captureEnabled ? "暂停问题捕获" : "开启问题捕获"}
-            aria-label={state.captureEnabled ? "暂停 Chat Graph 问题捕获" : "开启 Chat Graph 问题捕获"}
+            title={togglingCapture
+              ? "正在更新捕获状态"
+              : state.captureEnabled ? "暂停问题捕获" : "开启问题捕获"}
+            aria-label={togglingCapture
+              ? "正在更新 Chat Graph 问题捕获状态"
+              : state.captureEnabled ? "暂停 Chat Graph 问题捕获" : "开启 Chat Graph 问题捕获"}
             aria-pressed={state.captureEnabled}
             disabled={togglingCapture}
             onClick={() => void toggleCaptureService()}
           >
-            {state.captureEnabled
-              ? <Pause size={15} aria-hidden="true" />
-              : <Play size={15} aria-hidden="true" />}
-          </button>
-          <button
-            className="chat-graph-manual-capture"
-            type="button"
-            title={manualCapturing ? "正在补录最近问题" : "补录最近问题"}
-            aria-label="补录当前对话的最近一个问题"
-            disabled={manualCapturing || buildingGraph}
-            onClick={() => void captureLatestQuestion()}
-          >
-            <RefreshCw
-              className={manualCapturing ? "is-spinning" : undefined}
-              size={15}
-              aria-hidden="true"
-            />
+            {togglingCapture
+              ? <RefreshCw className="is-spinning" size={15} aria-hidden="true" />
+              : state.captureEnabled
+                ? <Pause size={15} aria-hidden="true" />
+                : <Play size={15} aria-hidden="true" />}
           </button>
           <button
             type="button"
@@ -938,16 +1174,39 @@ export function FloatingNavigationPanel() {
           </button>
           <button
             type="button"
-            title={import.meta.env.FIREFOX ? "在新标签页打开完整 Graph" : "打开完整 Graph"}
-            aria-label={import.meta.env.FIREFOX ? "在新标签页打开 Chat Graph" : "打开 Chat Graph 详情页"}
+            title={import.meta.env.FIREFOX
+              ? "打开方法：点击工具栏图标或按 Alt+Shift+G"
+              : "打开 Chat Graph 侧边栏"}
+            aria-label={import.meta.env.FIREFOX
+              ? "显示 Firefox 侧边栏打开方法"
+              : "打开 Chat Graph 侧边栏"}
             onClick={() => void openDetail()}
           >
-            <ExternalLink size={15} />
+            <PanelRightOpen size={15} aria-hidden="true" />
+          </button>
+          <button
+            className={`chat-graph-page-picker${selectingPageQuestion ? " is-active" : ""}`}
+            type="button"
+            title={selectingPageQuestion ? "取消选择页面问题" : "从页面选择任意问题加入当前项目"}
+            aria-label={selectingPageQuestion ? "取消选择页面问题" : "选择页面问题加入 Chat Graph"}
+            aria-pressed={selectingPageQuestion}
+            disabled={importingPageQuestion || buildingGraph}
+            onClick={togglePageQuestionSelection}
+          >
+            <MousePointer2 size={15} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            title="关闭浮窗（刷新页面后恢复）"
+            aria-label="关闭 Chat Graph 浮窗"
+            onClick={dismissPanel}
+          >
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
       </header>
 
-      <div className="chat-graph-panel__body">
+      <div className={`chat-graph-panel__body chat-graph-panel__body--${panelView}`}>
         <nav className="chat-graph-view-tabs" aria-label="浮窗视角">
           <button
             type="button"
@@ -966,6 +1225,7 @@ export function FloatingNavigationPanel() {
             className={panelView === "graph" ? "is-active" : undefined}
             aria-current={panelView === "graph" ? "page" : undefined}
             onClick={() => {
+              setSelectingPageQuestion(false);
               setEditingParent(false);
               closeProjectMenu();
               setPanelView("graph");
@@ -979,7 +1239,7 @@ export function FloatingNavigationPanel() {
             type="button"
             title={buildingGraph ? "正在读取完整会话并建图" : "将当前页面的所有问题生成线性图"}
             aria-label="将当前页面的所有问题一键建图"
-            disabled={buildingGraph || manualCapturing}
+            disabled={buildingGraph || importingPageQuestion || selectingPageQuestion}
             onClick={() => void buildCurrentPageGraph()}
           >
             <Network
@@ -991,16 +1251,28 @@ export function FloatingNavigationPanel() {
           </button>
         </nav>
 
+        {selectingPageQuestion ? (
+          <div className="chat-graph-page-selection" role="status">
+            <MousePointer2 size={14} aria-hidden="true" />
+            <span>滚动页面并点击任意用户问题</span>
+            <button type="button" onClick={() => setSelectingPageQuestion(false)}>取消</button>
+          </div>
+        ) : null}
+
         {!state.captureEnabled ? (
-          <div className="chat-graph-capture-paused" role="status">
-            <Pause size={13} aria-hidden="true" />
-            <span><strong>捕获已暂停</strong>你发送的新内容不会加入项目</span>
+          <div
+            className="chat-graph-capture-paused"
+            role="status"
+            title="你发送的新内容不会自动加入项目；仍可从页面选择任意问题。"
+          >
+            <TriangleAlert size={13} aria-hidden="true" />
+            <strong>捕获已暂停</strong>
             <button
               type="button"
-              disabled={manualCapturing || buildingGraph}
-              onClick={() => void captureLatestQuestion()}
+              disabled={importingPageQuestion || buildingGraph}
+              onClick={togglePageQuestionSelection}
             >
-              {manualCapturing ? "补录中…" : "补录最近问题"}
+              选择问题
             </button>
           </div>
         ) : null}
@@ -1008,7 +1280,7 @@ export function FloatingNavigationPanel() {
         {notice ? (
           <div className="chat-graph-notice" role="status">
             <span>{notice}</span>
-            <button type="button" aria-label="关闭补录提示" onClick={() => setNotice(undefined)}>
+            <button type="button" aria-label="关闭提示" onClick={() => setNotice(undefined)}>
               <X size={13} />
             </button>
           </div>
@@ -1033,28 +1305,18 @@ export function FloatingNavigationPanel() {
             onViewNodeDetails={(nodeId) => void viewGraphNodeDetails(nodeId)}
             onSetNodeStatus={setGraphNodeStatus}
             onDeleteNode={deleteGraphNode}
-            onRequestLocateNode={setConfirmingNavigationNodeId}
+            onRequestLocateNode={requestNodeNavigation}
+            onOpenFullGraph={() => void openDetail("graph")}
           />
         ) : state.parentState === "selecting" ? (
           <>
-            <section className="chat-graph-section chat-graph-section--current chat-graph-section--selection-current">
+            <section
+              key={state.latestQuestionKey ?? state.currentNodeId ?? state.currentCandidateId ?? "current"}
+              className="chat-graph-section chat-graph-section--current chat-graph-section--selection-current chat-graph-section--updated"
+            >
               <div className="chat-graph-section__heading">
-                <div className="chat-graph-label">CURRENT</div>
-                <div className="chat-graph-section__actions">
-                  {state.currentQuestion ? (
-                    <button
-                      className={`chat-graph-summary-toggle${currentSummaryExpanded ? " is-expanded" : ""}`}
-                      type="button"
-                      aria-expanded={currentSummaryExpanded}
-                      aria-controls="chat-graph-current-summary"
-                      onClick={() => setCurrentSummaryExpanded((expanded) => !expanded)}
-                    >
-                      <ChevronDown size={13} aria-hidden="true" />
-                      摘要
-                    </button>
-                  ) : null}
-                  {currentAction}
-                </div>
+                <div className="chat-graph-label chat-graph-label--current">CURRENT</div>
+                {currentActionMenu}
               </div>
               <p className="chat-graph-copy chat-graph-copy--current" title={state.currentQuestion}>
                 {state.currentQuestion || "—"}
@@ -1070,90 +1332,21 @@ export function FloatingNavigationPanel() {
               state={state}
               compact
               onComplete={() => setEditingParent(false)}
-              onError={setError}
+              onSave={saveCurrentParent}
             />
           </>
         ) : (
           <>
-            <section className="chat-graph-section chat-graph-section--parent">
-              <div className="chat-graph-section__heading">
-                <div className="chat-graph-label">PARENT</div>
-                <div className="chat-graph-section__actions">
-                  {state.parentSummary ? (
-                    <button
-                      className={`chat-graph-summary-toggle${parentSummaryExpanded ? " is-expanded" : ""}`}
-                      type="button"
-                      aria-expanded={parentSummaryExpanded}
-                      aria-controls="chat-graph-parent-summary"
-                      onClick={() => setParentSummaryExpanded((expanded) => !expanded)}
-                    >
-                      <ChevronDown size={13} aria-hidden="true" />
-                      摘要
-                    </button>
-                  ) : null}
-                  <button
-                    className="chat-graph-inline-action"
-                    type="button"
-                    disabled={state.parentState === "processing" || (!state.currentNodeId && !state.currentCandidateId)}
-                    onClick={() => {
-                      setError(undefined);
-                      setProjectMenuOpen(false);
-                      setEditingParent(true);
-                    }}
-                  >
-                    Change Parent
-                  </button>
-                </div>
-              </div>
-              <button
-                className={`chat-graph-copy chat-graph-copy--parent${state.parentId && state.focusedNodeId === state.parentId ? " is-focused" : ""}`}
-                type="button"
-                title={state.parentId ? `聚焦 Parent：${parentLabel}` : parentLabel}
-                disabled={!state.parentId || !state.currentNodeId}
-                onClick={() => void focusParent()}
-              >
-                {state.parentState === "processing" ? (
-                  <span className="chat-graph-loading-dot" aria-hidden="true" />
-                ) : null}
-                <span className="chat-graph-copy__text">{parentLabel}</span>
-                {state.parentId && state.focusedNodeId === state.parentId ? (
-                  <small>已聚焦</small>
-                ) : null}
-              </button>
-              {parentSummaryExpanded && state.parentSummary ? (
-                <div id="chat-graph-parent-summary" className="chat-graph-inline-summary">
-                  <div className="chat-graph-label">PARENT SUMMARY</div>
-                  <p title={state.parentSummary}>{state.parentSummary}</p>
-                </div>
-              ) : null}
-            </section>
-
-            <div className="chat-graph-connector" aria-hidden="true">
-              <span />
-              <ArrowDown size={14} />
-            </div>
-
-            <section className="chat-graph-section chat-graph-section--current">
+            <section
+              key={state.latestQuestionKey ?? state.currentNodeId ?? state.currentCandidateId ?? "current"}
+              className="chat-graph-section chat-graph-section--current chat-graph-section--updated"
+            >
               <div className="chat-graph-section__heading">
                 <div className="chat-graph-label chat-graph-label--current">
                   CURRENT
                   {isViewingGraphNode ? <small>图中选中</small> : null}
                 </div>
-                <div className="chat-graph-section__actions">
-                  {state.currentQuestion ? (
-                    <button
-                      className={`chat-graph-summary-toggle${currentSummaryExpanded ? " is-expanded" : ""}`}
-                      type="button"
-                      aria-expanded={currentSummaryExpanded}
-                      aria-controls="chat-graph-current-summary"
-                      onClick={() => setCurrentSummaryExpanded((expanded) => !expanded)}
-                    >
-                      <ChevronDown size={13} aria-hidden="true" />
-                      摘要
-                    </button>
-                  ) : null}
-                  {currentAction}
-                </div>
+                {currentActionMenu}
               </div>
               <p className="chat-graph-copy chat-graph-copy--current" title={state.currentQuestion}>
                 {state.currentQuestion || "—"}
@@ -1171,15 +1364,17 @@ export function FloatingNavigationPanel() {
                   aria-label={`确认删除节点：${state.currentQuestion || "当前节点"}`}
                 >
                   <p>
-                    {viewedNodeChildCount
-                      ? `删除后，${viewedNodeChildCount} 个直接子节点会移动到当前父级。`
-                      : "这个节点会从本地问题图中删除。"}
+                    {confirmingNodeDelete === "subtree"
+                      ? `将删除这个节点及其全部 ${viewedNodeDescendantCount} 个子孙节点，此操作不可撤销。`
+                      : viewedNodeChildCount
+                        ? `删除后，${viewedNodeChildCount} 个直接子节点会移动到当前父级。`
+                        : "这个节点会从本地问题图中删除。"}
                   </p>
                   <div>
                     <button
                       type="button"
                       disabled={deletingNode}
-                      onClick={() => setConfirmingNodeDelete(false)}
+                      onClick={() => setConfirmingNodeDelete(undefined)}
                     >
                       取消
                     </button>
@@ -1196,6 +1391,36 @@ export function FloatingNavigationPanel() {
               ) : null}
             </section>
 
+            <div className="chat-graph-connector chat-graph-connector--reverse" aria-hidden="true">
+              <span />
+              <ArrowUp size={14} />
+            </div>
+
+            <section className="chat-graph-section chat-graph-section--parent">
+              <div className="chat-graph-section__heading">
+                <div className="chat-graph-label">PARENT</div>
+                {parentActionMenu}
+              </div>
+              <button
+                className={`chat-graph-copy chat-graph-copy--parent${state.parentId && state.focusedNodeId === state.parentId ? " is-focused" : ""}`}
+                type="button"
+                title={state.parentSummary ? `查看父节点摘要：${parentLabel}` : parentLabel}
+                disabled={!state.parentId || !state.currentNodeId}
+                onClick={() => setParentSummaryExpanded((expanded) => !expanded)}
+              >
+                {state.parentState === "processing" ? (
+                  <span className="chat-graph-loading-dot" aria-hidden="true" />
+                ) : null}
+                <span className="chat-graph-copy__text">{parentLabel}</span>
+                {state.parentId && state.focusedNodeId === state.parentId ? <small>已聚焦</small> : null}
+              </button>
+              {parentSummaryExpanded && state.parentSummary ? (
+                <div id="chat-graph-parent-summary" className="chat-graph-inline-summary">
+                  <div className="chat-graph-label">PARENT SUMMARY</div>
+                  <p title={state.parentSummary}>{state.parentSummary}</p>
+                </div>
+              ) : null}
+            </section>
           </>
         )}
       </div>
@@ -1206,28 +1431,26 @@ export function FloatingNavigationPanel() {
             state={state}
             onCancel={() => setEditingParent(false)}
             onComplete={() => setEditingParent(false)}
-            onError={setError}
+            onSave={saveCurrentParent}
           />
         </div>
       ) : null}
-      {confirmingNavigationNodeId ? (
+      {confirmingNavigationTarget ? (
         <div className="chat-graph-navigation-layer" role="presentation">
           <section role="dialog" aria-modal="true" aria-labelledby="chat-graph-locate-title">
             <h3 id="chat-graph-locate-title">定位到原问题？</h3>
-            <p title={state.graphNodes.find((node) => node.id === confirmingNavigationNodeId)?.question}>
-              {state.graphNodes.find((node) => node.id === confirmingNavigationNodeId)?.question}
-            </p>
+            <p title={confirmingNavigationTarget.question}>{confirmingNavigationTarget.question}</p>
             <small>插件会打开对应会话，并定位、高亮这条问题。</small>
             <div>
-              <button type="button" disabled={navigationBusy} onClick={() => setConfirmingNavigationNodeId(undefined)}>取消</button>
+              <button type="button" disabled={navigationBusy} onClick={() => setConfirmingNavigationTarget(undefined)}>取消</button>
               <button
                 className="is-primary"
                 type="button"
                 disabled={navigationBusy}
                 onClick={() => {
-                  const nodeId = confirmingNavigationNodeId;
-                  setConfirmingNavigationNodeId(undefined);
-                  void navigateGraphNode(nodeId);
+                  const target = confirmingNavigationTarget;
+                  setConfirmingNavigationTarget(undefined);
+                  void navigateQuestionTarget(target);
                 }}
               >
                 {navigationBusy ? "正在定位…" : "定位到原问题"}
@@ -1236,18 +1459,16 @@ export function FloatingNavigationPanel() {
           </section>
         </div>
       ) : null}
-      {pendingNavigationNodeId ? (
+      {pendingNavigationTarget ? (
         <div className="chat-graph-navigation-layer" role="presentation">
           <section role="dialog" aria-modal="true" aria-labelledby="chat-graph-navigation-title">
             <h3 id="chat-graph-navigation-title">原会话尚未打开</h3>
-            <p title={state.graphNodes.find((node) => node.id === pendingNavigationNodeId)?.question}>
-              {state.graphNodes.find((node) => node.id === pendingNavigationNodeId)?.question}
-            </p>
+            <p title={pendingNavigationTarget.question}>{pendingNavigationTarget.question}</p>
             <small>请选择打开方式，插件随后会继续定位原问题。</small>
             <div>
-              <button type="button" disabled={navigationBusy} onClick={() => setPendingNavigationNodeId(undefined)}>取消</button>
-              <button type="button" disabled={navigationBusy} onClick={() => void navigateGraphNode(pendingNavigationNodeId, "current_tab")}>当前页打开</button>
-              <button className="is-primary" type="button" disabled={navigationBusy} onClick={() => void navigateGraphNode(pendingNavigationNodeId, "new_tab")}>
+              <button type="button" disabled={navigationBusy} onClick={() => setPendingNavigationTarget(undefined)}>取消</button>
+              <button type="button" disabled={navigationBusy} onClick={() => void navigateQuestionTarget(pendingNavigationTarget, "current_tab")}>当前页打开</button>
+              <button className="is-primary" type="button" disabled={navigationBusy} onClick={() => void navigateQuestionTarget(pendingNavigationTarget, "new_tab")}>
                 {navigationBusy ? "正在打开…" : "新标签页打开"}
               </button>
             </div>
@@ -1258,12 +1479,67 @@ export function FloatingNavigationPanel() {
   );
 }
 
+function NodeActionMenu({
+  label,
+  children,
+}: PropsWithChildren<{ label: string }>) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: PointerEvent) => {
+      if (menuRef.current && event.composedPath().includes(menuRef.current)) return;
+      setOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div ref={menuRef} className="chat-graph-node-actions">
+      <button
+        className="chat-graph-node-actions__trigger"
+        type="button"
+        title={label}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <MoreHorizontal size={16} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div
+          className="chat-graph-node-actions__menu"
+          role="menu"
+          aria-label={label}
+          onClick={(event) => {
+            if (!(event.target instanceof Element)) return;
+            const button = event.target.closest<HTMLButtonElement>("button");
+            if (button && !button.disabled) setOpen(false);
+          }}
+        >
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ParentEditor({
   state,
   compact = false,
   onCancel,
   onComplete,
-  onError,
+  onSave,
 }: ParentEditorProps) {
   const suggestedSelection = useMemo(() => {
     const previous = state.recommendedParents.find((option) => option.isPrevious);
@@ -1290,21 +1566,8 @@ function ParentEditor({
 
   async function confirm() {
     setSaving(true);
-    onError("");
     try {
-      const response = (await browser.runtime.sendMessage({
-        type: "SET_PANEL_PARENT",
-        parentId: selectedId || null,
-        ...(state.currentNodeId ? { currentNodeId: state.currentNodeId } : {}),
-        ...(state.currentCandidateId ? { currentCandidateId: state.currentCandidateId } : {}),
-      } satisfies ExtensionMessage)) as PanelActionResponse;
-      if (!response.ok) {
-        onError(response.error);
-        return;
-      }
-      onComplete();
-    } catch {
-      onError("暂时无法更新 Parent，请重试。");
+      if (await onSave(selectedId || null)) onComplete();
     } finally {
       setSaving(false);
     }
@@ -1314,11 +1577,11 @@ function ParentEditor({
     <section className={`chat-graph-parent-editor${compact ? " is-compact" : ""}`}>
       <div className="chat-graph-parent-editor__title">
         <div>
-          <div className="chat-graph-label">{compact ? "SELECT PARENT" : "CHANGE PARENT"}</div>
+          <div className="chat-graph-label">{compact ? "选择父节点" : "更换父节点"}</div>
           {!compact ? <p>为当前问题选择新的直接父问题</p> : null}
         </div>
         {onCancel ? (
-          <button type="button" title="取消" aria-label="取消修改 Parent" onClick={onCancel}>
+          <button type="button" title="取消" aria-label="取消修改父节点" onClick={onCancel}>
             <X size={15} />
           </button>
         ) : null}
@@ -1330,14 +1593,14 @@ function ParentEditor({
           <span className="sr-only">搜索节点</span>
           <input
             type="search"
-            placeholder="Search nodes…"
+            placeholder="搜索问题节点…"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
       ) : null}
 
-      <div className="chat-graph-parent-options" role="radiogroup" aria-label="Parent 候选">
+      <div className="chat-graph-parent-options" role="radiogroup" aria-label="父节点候选">
         {filteredOptions.map((option) => (
           <label key={option.id} className="chat-graph-parent-option">
             <input
@@ -1363,7 +1626,7 @@ function ParentEditor({
             checked={selectedId === ""}
             onChange={() => setSelectedId("")}
           />
-          <span>No Parent / Root</span>
+          <span>无父节点 / 新根节点</span>
           {compact && state.rootConfidence !== undefined ? (
             <small>{Math.round(state.rootConfidence * 100)}%</small>
           ) : null}
@@ -1375,9 +1638,9 @@ function ParentEditor({
       ) : null}
 
       <div className="chat-graph-parent-editor__actions">
-        {onCancel ? <button type="button" onClick={onCancel}>Cancel</button> : null}
+        {onCancel ? <button type="button" onClick={onCancel}>取消</button> : null}
         <button className="is-primary" type="button" disabled={saving} onClick={() => void confirm()}>
-          <Check size={14} /> {saving ? "Saving…" : "Confirm"}
+          <Check size={14} /> {saving ? "保存中…" : "确认"}
         </button>
       </div>
     </section>
@@ -1389,8 +1652,23 @@ function getParentLabel(state: FloatingPanelState): string {
   if (state.parentState === "selecting") return "待确认";
   if (state.parentState === "unresolved") return "未判断";
   if (state.parentState === "ready") return state.parentQuestion || "未判断";
-  if (state.parentState === "root") return "Root";
+  if (state.parentState === "root") return "根节点";
   return "—";
+}
+
+function countDescendants(nodes: FloatingPanelGraphNode[], rootId: string): number {
+  const descendants = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of nodes) {
+      if (node.parentId && descendants.has(node.parentId) && !descendants.has(node.id)) {
+        descendants.add(node.id);
+        changed = true;
+      }
+    }
+  }
+  return descendants.size - 1;
 }
 
 function clampPosition(x: number, y: number, width: number, height: number) {

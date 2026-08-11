@@ -39,11 +39,8 @@ export function getOpenBranches(nodes: QuestionNode[], focusId: string): Questio
     .filter(
       (node) =>
         node.id !== focus.id &&
-        (node.status === "pending" || node.status === "parked") &&
+        node.status === "pending" &&
         (node.parentId === focus.parentId || node.parentId === focus.id),
     )
-    .sort((a, b) => {
-      if (a.status !== b.status) return a.status === "pending" ? -1 : 1;
-      return a.createdAt - b.createdAt;
-    });
+    .sort((a, b) => a.createdAt - b.createdAt);
 }

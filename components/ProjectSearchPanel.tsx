@@ -45,7 +45,7 @@ export function ProjectSearchPanel({ nodes, onLocate }: Props) {
                   <div className="project-search-result__path">
                     {ancestors.map((ancestor) => ancestor.question).join(" › ")}
                   </div>
-                ) : <div className="project-search-result__path">Root</div>}
+                ) : <div className="project-search-result__path">根节点</div>}
                 <h3>{highlightMatch(node.question, normalizedQuery)}</h3>
                 <p>{highlightMatch(node.summary, normalizedQuery)}</p>
               </button>

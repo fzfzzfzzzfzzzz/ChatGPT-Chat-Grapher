@@ -44,14 +44,14 @@ export function QuestionDetailDialog({
   }
 
   return (
-    <Modal title="Question Node" description="Node 内容只保留 question、summary 和 status。" onClose={onClose}>
+    <Modal title="问题节点" description="节点内容只保留问题、摘要和状态。" onClose={onClose}>
       <form className="form-stack" onSubmit={(event) => void submit(event)}>
         <div className="question-readonly">
-          <span>Question</span>
+          <span>问题</span>
           <p>{node.question}</p>
         </div>
         <label>
-          Summary
+          摘要
           <textarea
             required
             rows={3}
@@ -62,7 +62,7 @@ export function QuestionDetailDialog({
         </label>
         <div className="form-grid">
           <label>
-            Status
+            状态
             <select value={status} onChange={(event) => setStatus(event.target.value as NodeStatus)}>
               {(Object.keys(STATUS_LABELS) as NodeStatus[]).map((value) => (
                 <option key={value} value={value}>{STATUS_LABELS[value]}</option>
@@ -70,9 +70,9 @@ export function QuestionDetailDialog({
             </select>
           </label>
           <label>
-            Parent
+            父节点
             <select value={parentId} onChange={(event) => setParentId(event.target.value)}>
-              <option value="">No Parent / Root</option>
+              <option value="">无父节点 / 根节点</option>
               {validParents.map((candidate) => (
                 <option key={candidate.id} value={candidate.id}>{candidate.question}</option>
               ))}
@@ -87,7 +87,7 @@ export function QuestionDetailDialog({
         </div>
         <div className="form-actions form-actions--between">
           <button className="button button--danger" type="button" onClick={onDelete}>
-            <Trash2 size={14} /> 删除 Node
+            <Trash2 size={14} /> 删除节点
           </button>
           <div>
             <button className="button" type="button" onClick={onClose}>取消</button>

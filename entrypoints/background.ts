@@ -1,12 +1,17 @@
 import { browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
-import { recommendParentWithBailian } from "../ai/bailianClient";
+import { recommendParent, testAIProvider } from "../ai/client";
+import { isAIProviderId } from "../ai/providers";
 import {
   conversationUrlForChat,
   getConversationId,
 } from "../adapters/chatgpt/getConversation";
 import { db } from "../db/database";
 import { fallbackSummary, DiscussionService } from "../graph/discussionService";
+import {
+  executeFloatingPanelCommand,
+  type FloatingPanelCommandMessage,
+} from "../graph/floatingPanelCommands";
 import {
   buildFloatingPanelState,
   emptyFloatingPanelState,
@@ -18,14 +23,18 @@ import { selectExistingConversationTab } from "../platform/conversationNavigatio
 import { getAISettings } from "../settings/storage";
 import type {
   BuildCurrentPageGraphResponse,
-  FloatingPanelState,
   CaptureQuestionResponse,
+  ConversationOpenMode,
   ExtensionMessage,
+  FloatingPanelState,
   LocateQuestionResponse,
   NavigateToNodeResponse,
+  PanelActionContext,
   PanelActionResponse,
+  PanelQuestionSource,
+  TestAIProviderResponse,
 } from "../shared/messages";
-import { isExtensionMessage } from "../shared/messages";
+import { isExtensionMessage, isTestAIProviderMessage } from "../shared/messages";
 import {
   CAPTURE_SERVICE_ENABLED_KEY,
   canCaptureQuestion,
@@ -34,7 +43,30 @@ import {
 import type { CapturedQuestion, QuestionCandidate, QuestionNode } from "../types/domain";
 
 const SELECTED_PROJECT_KEY = "selectedProjectId";
+const REQUESTED_SIDE_PANEL_VIEW_KEY = "requestedSidePanelView";
 const service = new DiscussionService(db);
+
+type CaptureQuestionResult =
+  | {
+      ok: true;
+      destination: "graph" | "inbox" | "duplicate" | "disabled";
+      nodeId?: string;
+    }
+  | { ok: false; error: string };
+
+type BuildCurrentPageGraphResult =
+  | {
+      ok: true;
+      createdCount: number;
+      skippedCount: number;
+      activeNodeId: string;
+    }
+  | { ok: false; error: string };
+
+type LocatableQuestion = Pick<
+  QuestionNode | QuestionCandidate,
+  "chatId" | "messageId" | "messageAnchor" | "messageLocator"
+>;
 
 async function selectedProject() {
   const stored = await browser.storage.local.get(SELECTED_PROJECT_KEY);
@@ -43,9 +75,21 @@ async function selectedProject() {
   return selected ?? (await service.projects.list())[0];
 }
 
+async function setSelectedProjectId(projectId: string | undefined): Promise<void> {
+  if (projectId) {
+    await browser.storage.local.set({ [SELECTED_PROJECT_KEY]: projectId });
+  } else {
+    await browser.storage.local.remove(SELECTED_PROJECT_KEY);
+  }
+}
+
 async function captureServiceEnabled(): Promise<boolean> {
   const stored = await browser.storage.local.get(CAPTURE_SERVICE_ENABLED_KEY);
   return captureServiceEnabledFromStorage(stored[CAPTURE_SERVICE_ENABLED_KEY]);
+}
+
+async function setCaptureEnabled(enabled: boolean): Promise<void> {
+  await browser.storage.local.set({ [CAPTURE_SERVICE_ENABLED_KEY]: enabled });
 }
 
 async function ensureSelectedProject(captured: CapturedQuestion) {
@@ -89,6 +133,12 @@ async function getFloatingPanelState(
   });
 }
 
+function getFloatingPanelStateForContext(
+  context: PanelActionContext,
+): Promise<FloatingPanelState> {
+  return getFloatingPanelState(context.chatId, context.viewingNodeId);
+}
+
 async function sendFloatingPanelState(tabId: number, chatId?: string): Promise<void> {
   const state = await getFloatingPanelState(chatId);
   await browser.tabs.sendMessage(tabId, {
@@ -113,10 +163,14 @@ async function broadcastFloatingPanelState(): Promise<void> {
   );
 }
 
+function notifyFloatingPanelStateChanged(): void {
+  void broadcastFloatingPanelState().catch(() => undefined);
+}
+
 async function captureQuestion(
   captured: CapturedQuestion,
   manual = false,
-): Promise<CaptureQuestionResponse> {
+): Promise<CaptureQuestionResult> {
   if (!canCaptureQuestion(await captureServiceEnabled(), manual)) {
     return { ok: true, destination: "disabled" };
   }
@@ -128,7 +182,7 @@ async function captureQuestion(
   if (created.status !== "processing") return { ok: true, destination: "duplicate" };
 
   const candidate = created as QuestionCandidate;
-  await broadcastFloatingPanelState();
+  notifyFloatingPanelStateChanged();
 
   try {
     const nodes = await service.nodes.listForProject(project.id);
@@ -136,9 +190,12 @@ async function captureQuestion(
     const currentPath = focus
       ? getCurrentPath(nodes, focus.id).filter(canBeParentNode)
       : [];
-    const recommendation = await recommendParentWithBailian({
+    const recommendation = await recommendParent({
       question: candidate.question,
       fallbackSummary: candidate.summary,
+      ...(captured.assistantContext
+        ? { assistantContext: captured.assistantContext }
+        : {}),
       currentPath: currentPath.map(({ id, question, summary }) => ({ id, question, summary })),
       candidateNodes: nodes
         .filter(canBeParentNode)
@@ -170,7 +227,7 @@ async function captureQuestion(
     const best = reviewed.recommendations[0];
     if (best && best.confidence >= settings.highConfidence) {
       const node = await service.promoteCandidate(candidate.id, best.nodeId, "ai", best.confidence);
-      await broadcastFloatingPanelState();
+      notifyFloatingPanelStateChanged();
       return { ok: true, destination: "graph", nodeId: node.id };
     }
     if (reviewed.noParentConfidence >= settings.highConfidence) {
@@ -180,23 +237,23 @@ async function captureQuestion(
         "ai",
         reviewed.noParentConfidence,
       );
-      await broadcastFloatingPanelState();
+      notifyFloatingPanelStateChanged();
       return { ok: true, destination: "graph", nodeId: node.id };
     }
-    await broadcastFloatingPanelState();
+    notifyFloatingPanelStateChanged();
     return { ok: true, destination: "inbox" };
   } catch {
     if (await service.candidates.get(candidate.id)) {
       await service.markCandidateFailed(candidate.id);
     }
-    await broadcastFloatingPanelState();
+    notifyFloatingPanelStateChanged();
     return { ok: true, destination: "inbox" };
   }
 }
 
 async function buildCurrentPageGraph(
   capturedQuestions: CapturedQuestion[],
-): Promise<BuildCurrentPageGraphResponse> {
+): Promise<BuildCurrentPageGraphResult> {
   if (!capturedQuestions.length) {
     return { ok: false, error: "当前页面没有可建图的用户问题。" };
   }
@@ -208,118 +265,61 @@ async function buildCurrentPageGraph(
   }));
   const project = await ensureSelectedProject(normalized[0]!);
   const result = await service.importLinearQuestions(project.id, normalized);
-  await broadcastFloatingPanelState();
+  notifyFloatingPanelStateChanged();
   return { ok: true, ...result };
+}
+
+async function captureQuestionWithState(
+  captured: CapturedQuestion,
+  manual: boolean,
+  context?: PanelActionContext,
+): Promise<CaptureQuestionResponse> {
+  const response = await captureQuestion(captured, manual);
+  if (!response.ok) return response;
+  const stateContext: PanelActionContext = {
+    ...(context ?? {}),
+    chatId: context?.chatId ?? captured.chatId,
+  };
+  return {
+    ...response,
+    state: await getFloatingPanelStateForContext(stateContext),
+  };
+}
+
+async function buildCurrentPageGraphWithState(
+  capturedQuestions: CapturedQuestion[],
+  context: PanelActionContext,
+): Promise<BuildCurrentPageGraphResponse> {
+  const response = await buildCurrentPageGraph(capturedQuestions);
+  if (!response.ok) return response;
+  return {
+    ...response,
+    state: await getFloatingPanelStateForContext({
+      ...context,
+      viewingNodeId: response.activeNodeId,
+    }),
+  };
 }
 
 async function focusPanelParent(currentNodeId: string): Promise<void> {
   const node = await service.nodes.get(currentNodeId);
   if (!node?.parentId) throw new Error("当前问题没有 Parent。");
   await service.focusNode(node.parentId);
-  await broadcastFloatingPanelState();
+  notifyFloatingPanelStateChanged();
 }
 
-async function setPanelParent(message: Extract<ExtensionMessage, { type: "SET_PANEL_PARENT" }>) {
-  if (message.currentNodeId) {
-    await service.changeParent(message.currentNodeId, message.parentId, "user");
-  } else if (message.currentCandidateId) {
-    await service.promoteCandidate(message.currentCandidateId, message.parentId, "user");
-  } else {
-    throw new Error("当前问题尚不可修改 Parent。");
-  }
-  await broadcastFloatingPanelState();
-}
-
-async function selectPanelProject(projectId: string): Promise<void> {
-  const project = await service.projects.get(projectId);
-  if (!project) throw new Error("项目不存在或已被删除。");
-  await browser.storage.local.set({ [SELECTED_PROJECT_KEY]: project.id });
-  await broadcastFloatingPanelState();
-}
-
-async function createPanelProject(title: string, goal: string): Promise<void> {
-  const cleanedTitle = title.trim();
-  const project = await service.createProject(
-    cleanedTitle,
-    goal.trim() || `推进“${cleanedTitle}”相关讨论并保持问题主线清晰。`,
-  );
-  await browser.storage.local.set({ [SELECTED_PROJECT_KEY]: project.id });
-  await broadcastFloatingPanelState();
-}
-
-async function deletePanelProject(projectId: string): Promise<void> {
-  const [project, currentProject] = await Promise.all([
-    service.projects.get(projectId),
-    selectedProject(),
-  ]);
-  if (!project) throw new Error("项目不存在或已被删除。");
-
-  await service.deleteProject(project.id);
-  if (currentProject?.id === project.id) {
-    const nextProject = (await service.projects.list())[0];
-    if (nextProject) {
-      await browser.storage.local.set({ [SELECTED_PROJECT_KEY]: nextProject.id });
-    } else {
-      await browser.storage.local.remove(SELECTED_PROJECT_KEY);
-    }
-  }
-  await broadcastFloatingPanelState();
-}
-
-async function deletePanelNode(nodeId: string): Promise<void> {
-  const [node, project] = await Promise.all([
-    service.nodes.get(nodeId),
-    selectedProject(),
-  ]);
-  if (!node || node.projectId !== project?.id) {
-    throw new Error("该节点不属于当前项目，请刷新后重试。");
-  }
-  await service.deleteNode(node.id);
-  await broadcastFloatingPanelState();
-}
-
-async function setPanelNodeStatus(
-  message: Extract<ExtensionMessage, { type: "SET_PANEL_NODE_STATUS" }>,
-): Promise<void> {
-  const [node, project] = await Promise.all([
-    service.nodes.get(message.nodeId),
-    selectedProject(),
-  ]);
-  if (!node || node.projectId !== project?.id) {
-    throw new Error("该节点不属于当前项目，请刷新后重试。");
-  }
-  await service.setStatus(node.id, message.status);
-  await broadcastFloatingPanelState();
-}
-
-async function setCaptureServiceEnabled(enabled: boolean): Promise<void> {
-  await browser.storage.local.set({ [CAPTURE_SERVICE_ENABLED_KEY]: enabled });
-  await broadcastFloatingPanelState();
-}
-
-async function ignorePanelCurrent(
-  message: Extract<ExtensionMessage, { type: "IGNORE_PANEL_CURRENT" }>,
-): Promise<void> {
-  const project = await selectedProject();
-  if (!project) throw new Error("当前没有可用项目。");
-
-  if (message.currentCandidateId) {
-    const candidate = await service.candidates.get(message.currentCandidateId);
-    if (!candidate || candidate.projectId !== project.id) {
-      throw new Error("当前问题已发生变化，请刷新后重试。");
-    }
-    await service.candidates.delete(candidate.id);
-  } else if (message.currentNodeId) {
-    const node = await service.nodes.get(message.currentNodeId);
-    if (!node || node.projectId !== project.id) {
-      throw new Error("当前问题已发生变化，请刷新后重试。");
-    }
-    await service.deleteNode(node.id);
-  } else {
-    throw new Error("当前没有可忽略的问题。");
-  }
-
-  await broadcastFloatingPanelState();
+async function handleFloatingPanelCommand(
+  message: FloatingPanelCommandMessage,
+) {
+  const response = await executeFloatingPanelCommand(message, {
+    service,
+    getSelectedProject: selectedProject,
+    setSelectedProjectId,
+    setCaptureEnabled,
+    getState: getFloatingPanelStateForContext,
+  });
+  if (response.ok) notifyFloatingPanelStateChanged();
+  return response;
 }
 
 async function navigateToNode(
@@ -335,7 +335,36 @@ async function navigateToNode(
     };
   }
 
-  const sourceTabId = message.sourceTabId ?? senderTabId;
+  return navigateLocatableQuestion(node, message, senderTabId);
+}
+
+async function navigateToQuestion(
+  source: PanelQuestionSource,
+  options: { openMode?: ConversationOpenMode; sourceTabId?: number },
+  senderTabId?: number,
+): Promise<NavigateToNodeResponse> {
+  const question = source.kind === "node"
+    ? await service.nodes.get(source.id)
+    : await service.candidates.get(source.id);
+  if (!question) {
+    return {
+      ok: false,
+      status: "message_not_found",
+      error: source.kind === "node"
+        ? "问题节点不存在或已被删除。"
+        : "待整理问题不存在或已被处理。",
+    };
+  }
+  return navigateLocatableQuestion(question, options, senderTabId);
+}
+
+async function navigateLocatableQuestion(
+  question: LocatableQuestion,
+  options: { openMode?: ConversationOpenMode; sourceTabId?: number },
+  senderTabId?: number,
+): Promise<NavigateToNodeResponse> {
+
+  const sourceTabId = options.sourceTabId ?? senderTabId;
   const sourceTab = sourceTabId === undefined
     ? undefined
     : await browser.tabs.get(sourceTabId).catch(() => undefined);
@@ -344,11 +373,11 @@ async function navigateToNode(
   });
   let targetTab = selectExistingConversationTab(
     chatTabs,
-    node.chatId,
+    question.chatId,
     sourceTab?.windowId,
   );
 
-  if (!targetTab && !message.openMode) {
+  if (!targetTab && !options.openMode) {
     return {
       ok: false,
       status: "open_choice_required",
@@ -357,14 +386,14 @@ async function navigateToNode(
   }
 
   let navigated = false;
-  if (!targetTab && message.openMode === "new_tab") {
+  if (!targetTab && options.openMode === "new_tab") {
     targetTab = await browser.tabs.create({
-      url: conversationUrlForChat(node.chatId),
+      url: conversationUrlForChat(question.chatId),
       active: true,
       ...(sourceTab?.windowId !== undefined ? { windowId: sourceTab.windowId } : {}),
     });
     navigated = true;
-  } else if (!targetTab && message.openMode === "current_tab") {
+  } else if (!targetTab && options.openMode === "current_tab") {
     const fallbackTab = sourceTab ?? (await browser.tabs.query({
       active: true,
       lastFocusedWindow: true,
@@ -377,7 +406,7 @@ async function navigateToNode(
       };
     }
     targetTab = await browser.tabs.update(fallbackTab.id, {
-      url: conversationUrlForChat(node.chatId),
+      url: conversationUrlForChat(question.chatId),
       active: true,
     });
     navigated = true;
@@ -396,7 +425,7 @@ async function navigateToNode(
   }
   await browser.tabs.update(targetTab.id, { active: true }).catch(() => undefined);
 
-  if (navigated && !(await waitForConversationTab(targetTab.id, node.chatId))) {
+  if (navigated && !(await waitForConversationTab(targetTab.id, question.chatId))) {
     return {
       ok: false,
       status: "conversation_unavailable",
@@ -404,7 +433,7 @@ async function navigateToNode(
     };
   }
 
-  return locateNodeInTab(targetTab.id, node);
+  return locateQuestionInTab(targetTab.id, question);
 }
 
 async function refineMessageLocator(
@@ -421,9 +450,9 @@ async function refineMessageLocator(
   return false;
 }
 
-async function locateNodeInTab(
+async function locateQuestionInTab(
   tabId: number,
-  node: QuestionNode,
+  question: LocatableQuestion,
 ): Promise<NavigateToNodeResponse> {
   const delays = [0, 180, 360, 700, 1_100, 1_600];
   let lastResponse: LocateQuestionResponse | undefined;
@@ -434,10 +463,10 @@ async function locateNodeInTab(
     try {
       const response = await browser.tabs.sendMessage(tabId, {
         type: "LOCATE_QUESTION",
-        chatId: node.chatId,
-        messageId: node.messageId,
-        ...(node.messageAnchor ? { messageAnchor: node.messageAnchor } : {}),
-        ...(node.messageLocator ? { messageLocator: node.messageLocator } : {}),
+        chatId: question.chatId,
+        messageId: question.messageId,
+        ...(question.messageAnchor ? { messageAnchor: question.messageAnchor } : {}),
+        ...(question.messageLocator ? { messageLocator: question.messageLocator } : {}),
       } satisfies ExtensionMessage) as LocateQuestionResponse;
       receiverReached = true;
       lastResponse = response;
@@ -518,6 +547,32 @@ export default defineBackground(() => {
 
   browser.runtime.onMessage.addListener((rawMessage: unknown, sender, sendResponse) => {
     if (!isExtensionMessage(rawMessage)) return undefined;
+    if (rawMessage.type === "TEST_AI_PROVIDER") {
+      if (
+        sender.tab !== undefined ||
+        sender.id !== browser.runtime.id ||
+        !isTestAIProviderMessage(rawMessage) ||
+        !isAIProviderId(rawMessage.providerId)
+      ) {
+        sendResponse({ ok: false, error: "无效的 AI 连接测试请求。" } satisfies TestAIProviderResponse);
+        return undefined;
+      }
+      void testAIProvider({
+        providerId: rawMessage.providerId,
+        profile: rawMessage.profile,
+        timeoutMs: rawMessage.timeoutMs,
+      })
+        .then((recommendation) => sendResponse({
+          ok: true,
+          providerId: rawMessage.providerId,
+          model: recommendation.model ?? rawMessage.profile.model,
+        } satisfies TestAIProviderResponse))
+        .catch((error: unknown) => sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : "AI 连接测试失败。",
+        } satisfies TestAIProviderResponse));
+      return true;
+    }
     if (rawMessage.type === "GET_FLOATING_PANEL_STATE") {
       void getFloatingPanelState(rawMessage.chatId, rawMessage.selectedNodeId)
         .then(sendResponse)
@@ -525,13 +580,18 @@ export default defineBackground(() => {
       return true;
     }
     if (rawMessage.type === "CAPTURE_QUESTION") {
-      void captureQuestion({
+      const captured = {
         ...rawMessage.captured,
         question: rawMessage.captured.question.trim(),
         messageId:
           rawMessage.captured.messageId ||
           `${rawMessage.captured.chatId}:${fallbackSummary(rawMessage.captured.question)}`,
-      }, rawMessage.manual === true)
+      };
+      void captureQuestionWithState(
+        captured,
+        rawMessage.manual === true,
+        rawMessage.context,
+      )
         .then(sendResponse)
         .catch((error: unknown) =>
           sendResponse({
@@ -542,7 +602,10 @@ export default defineBackground(() => {
       return true;
     }
     if (rawMessage.type === "BUILD_CURRENT_PAGE_GRAPH") {
-      void buildCurrentPageGraph(rawMessage.capturedQuestions)
+      void buildCurrentPageGraphWithState(
+        rawMessage.capturedQuestions,
+        rawMessage.context,
+      )
         .then(sendResponse)
         .catch((error: unknown) =>
           sendResponse({
@@ -569,43 +632,50 @@ export default defineBackground(() => {
         } satisfies NavigateToNodeResponse));
       return true;
     }
+    if (rawMessage.type === "NAVIGATE_TO_QUESTION") {
+      void navigateToQuestion(rawMessage.source, rawMessage, sender.tab?.id)
+        .then(sendResponse)
+        .catch(() => sendResponse({
+          ok: false,
+          status: "conversation_unavailable",
+          error: "暂时无法打开原会话，请重试。",
+        } satisfies NavigateToNodeResponse));
+      return true;
+    }
     if (rawMessage.type === "FOCUS_PANEL_PARENT") {
       respondWithAction(focusPanelParent(rawMessage.currentNodeId), sendResponse);
       return true;
     }
     if (rawMessage.type === "SELECT_PANEL_PROJECT") {
-      respondWithAction(selectPanelProject(rawMessage.projectId), sendResponse);
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "CREATE_PANEL_PROJECT") {
-      respondWithAction(
-        createPanelProject(rawMessage.title, rawMessage.goal),
-        sendResponse,
-      );
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "DELETE_PANEL_PROJECT") {
-      respondWithAction(deletePanelProject(rawMessage.projectId), sendResponse);
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "DELETE_PANEL_NODE") {
-      respondWithAction(deletePanelNode(rawMessage.nodeId), sendResponse);
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "SET_PANEL_PARENT") {
-      respondWithAction(setPanelParent(rawMessage), sendResponse);
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "SET_PANEL_NODE_STATUS") {
-      respondWithAction(setPanelNodeStatus(rawMessage), sendResponse);
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "SET_CAPTURE_SERVICE_ENABLED") {
-      respondWithAction(setCaptureServiceEnabled(rawMessage.enabled), sendResponse);
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "IGNORE_PANEL_CURRENT") {
-      respondWithAction(ignorePanelCurrent(rawMessage), sendResponse);
+      void handleFloatingPanelCommand(rawMessage).then(sendResponse);
       return true;
     }
     if (rawMessage.type === "DISCUSSION_MAP_CHANGED") {
@@ -622,14 +692,16 @@ export default defineBackground(() => {
         return undefined;
       }
 
-      // Chrome sidePanel.open must be invoked synchronously from the message
-      // triggered by the user's click. Awaiting storage first loses its gesture.
-      const opening = openDiscussionDetail(sender.tab.id);
-      if (rawMessage.projectId) {
-        void browser.storage.local
-          .set({ [SELECTED_PROJECT_KEY]: rawMessage.projectId })
-          .catch(() => undefined);
+      // Start persisting the requested destination before opening, but do not
+      // await: Chrome sidePanel.open must retain the originating user gesture.
+      const destination = {
+        ...(rawMessage.projectId ? { [SELECTED_PROJECT_KEY]: rawMessage.projectId } : {}),
+        ...(rawMessage.view ? { [REQUESTED_SIDE_PANEL_VIEW_KEY]: rawMessage.view } : {}),
+      };
+      if (Object.keys(destination).length) {
+        void browser.storage.local.set(destination).catch(() => undefined);
       }
+      const opening = openDiscussionDetail(sender.tab.id);
       respondWithAction(opening, sendResponse);
       return true;
     }

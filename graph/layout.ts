@@ -5,11 +5,8 @@ import { getCurrentPath } from "./questionTree";
 export type QuestionNodeData = { label: string; node: QuestionNode; onCurrentPath: boolean };
 
 const STATUS_COLORS: Record<QuestionNode["status"], { background: string; border: string }> = {
-  active: { background: "#fff7ed", border: "#f97316" },
   pending: { background: "#ffffff", border: "#94a3b8" },
   resolved: { background: "#f0fdf4", border: "#22c55e" },
-  parked: { background: "#fffbeb", border: "#f59e0b" },
-  rejected: { background: "#f8fafc", border: "#cbd5e1" },
 };
 
 export function questionsToFlow(
@@ -42,10 +39,10 @@ export function questionsToFlow(
           border: `2px solid ${onCurrentPath ? "#2563eb" : colors.border}`,
           background: colors.background,
           borderRadius: 14,
-          color: question.status === "rejected" ? "#64748b" : "#172033",
+          color: "#172033",
           fontSize: 13,
           fontWeight: question.id === focusId ? 750 : 600,
-          opacity: question.status === "rejected" ? 0.66 : 1,
+          opacity: 1,
           boxShadow: question.id === focusId ? "0 8px 24px rgba(37, 99, 235, .18)" : "none",
         },
       });

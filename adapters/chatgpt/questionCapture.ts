@@ -7,6 +7,7 @@ const TURN_CONTAINER_SELECTOR = "section[data-turn-id], article";
 const HISTORY_SCAN_DELAY_MS = 100;
 const HISTORY_SCAN_MAX_STEPS = 120;
 const HISTORY_SCAN_STALL_LIMIT = 3;
+const MAX_ASSISTANT_CONTEXT_LENGTH = 6_000;
 
 export function getLatestCapturedQuestion(root: ParentNode = document): CapturedQuestion | undefined {
   return getCapturedQuestions(root).at(-1);
@@ -32,6 +33,33 @@ export function getCapturedQuestions(root: ParentNode = document): CapturedQuest
       ...(meta.conversationTitle ? { conversationTitle: meta.conversationTitle } : {}),
     }];
   });
+}
+
+export function getCapturedQuestionFromElement(
+  element: HTMLElement,
+  root: ParentNode = document,
+): CapturedQuestion | undefined {
+  const messages = getUserMessages(root);
+  const ordinal = messages.indexOf(element);
+  const meta = getConversationMetaFromPage();
+  if (ordinal < 0 || !meta) return undefined;
+
+  const question = normalizeMessageText(element.innerText);
+  if (!question) return undefined;
+  const fingerprint = fingerprintMessageText(question);
+  const messageAnchor = `user:${ordinal}:${fingerprint}`;
+  const messageLocator = buildMessageLocator(element, ordinal, fingerprint);
+  const assistantContext = getAssistantContextForQuestion(element, root);
+
+  return {
+    question,
+    chatId: meta.chatId,
+    messageId: messageLocator.messageId || messageLocator.turnId || messageAnchor,
+    ...(assistantContext ? { assistantContext } : {}),
+    messageAnchor,
+    messageLocator,
+    ...(meta.conversationTitle ? { conversationTitle: meta.conversationTitle } : {}),
+  };
 }
 
 export async function getAllCapturedQuestions(
@@ -281,6 +309,33 @@ function stableMessageId(value: string | undefined): string | undefined {
 
 function getUserMessages(root: ParentNode): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(CHATGPT_SELECTORS.userMessage));
+}
+
+function getAssistantContextForQuestion(
+  selectedQuestion: HTMLElement,
+  root: ParentNode,
+): string | undefined {
+  const authoredMessages = Array.from(root.querySelectorAll<HTMLElement>(
+    `${CHATGPT_SELECTORS.userMessage}, ${CHATGPT_SELECTORS.assistantMessage}`,
+  ));
+  const questionIndex = authoredMessages.indexOf(selectedQuestion);
+  if (questionIndex < 0) return undefined;
+
+  const answerParts: string[] = [];
+  for (const message of authoredMessages.slice(questionIndex + 1)) {
+    if (message.matches(CHATGPT_SELECTORS.userMessage)) break;
+    if (!message.matches(CHATGPT_SELECTORS.assistantMessage)) continue;
+    const text = normalizeMessageText(message.innerText);
+    if (text) answerParts.push(text);
+  }
+  const answer = answerParts.join("\n\n");
+  if (!answer) return undefined;
+  if (answer.length <= MAX_ASSISTANT_CONTEXT_LENGTH) return answer;
+
+  const marker = "\n…\n";
+  const tailLength = 1_500;
+  const headLength = MAX_ASSISTANT_CONTEXT_LENGTH - marker.length - tailLength;
+  return `${answer.slice(0, headLength)}${marker}${answer.slice(-tailLength)}`;
 }
 
 function findConversationScrollContainer(root: ParentNode): Element | undefined {

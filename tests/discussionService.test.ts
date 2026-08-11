@@ -38,7 +38,7 @@ describe("DiscussionService v0.5", () => {
     expect(node).toMatchObject({
       question: "浏览器插件如何读取 ChatGPT？",
       summary: "讨论如何稳定捕获 ChatGPT 用户消息。",
-      status: "active",
+      status: "pending",
       parentId: null,
     });
     for (const forbidden of ["reason", "resource", "decision", "routes", "answer", "openQuestions"]) {
@@ -52,6 +52,20 @@ describe("DiscussionService v0.5", () => {
     const duplicate = await service.createCandidate(project.id, capture("Question", 1));
     expect(duplicate.id).toBe(first.id);
     expect(await database.candidates.count()).toBe(1);
+  });
+
+  it("does not persist ephemeral assistant context in candidates or nodes", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const candidate = await service.createCandidate(project.id, {
+      ...capture("Question with an answer", 9),
+      assistantContext: "This answer is only used for one AI recommendation request.",
+    });
+    expect(candidate).not.toHaveProperty("assistantContext");
+
+    const node = "recommendations" in candidate
+      ? await service.promoteCandidate(candidate.id, null, "user")
+      : candidate;
+    expect(node).not.toHaveProperty("assistantContext");
   });
 
   it("deduplicates a provisional capture after a stable id becomes available", async () => {
@@ -112,7 +126,7 @@ describe("DiscussionService v0.5", () => {
     expect((await service.nodes.get(second.id))?.messageLocator).toEqual(locator);
   });
 
-  it("promotes candidates into a logical tree and keeps one active question", async () => {
+  it("marks a parent completed when a new pending child is added", async () => {
     const project = await service.createProject("Project", "Goal");
     const rootCandidate = await service.createCandidate(project.id, capture("怎么做 Chat Graph？", 1));
     const root = await service.promoteCandidate(rootCandidate.id, null, "user");
@@ -124,8 +138,8 @@ describe("DiscussionService v0.5", () => {
     const nodes = await service.nodes.listForProject(project.id);
 
     expect(child.parentId).toBe(root.id);
-    expect(nodes.find((node) => node.id === root.id)?.status).toBe("pending");
-    expect(nodes.filter((node) => node.status === "active")).toHaveLength(1);
+    expect(nodes.find((node) => node.id === root.id)?.status).toBe("resolved");
+    expect(nodes.find((node) => node.id === child.id)?.status).toBe("pending");
     expect((await service.projects.get(project.id))?.focusNodeId).toBe(child.id);
   });
 
@@ -143,7 +157,7 @@ describe("DiscussionService v0.5", () => {
     expect(nodes.filter((node) => node.parentId === null)).toHaveLength(2);
   });
 
-  it("imports an empty project as a resolved linear history with the latest question active", async () => {
+  it("imports a linear history with completed parents and a pending leaf", async () => {
     const project = await service.createProject("Project", "Goal");
     const result = await service.importLinearQuestions(project.id, [
       capture("First", 1),
@@ -158,7 +172,7 @@ describe("DiscussionService v0.5", () => {
     expect(result).toMatchObject({ createdCount: 3, skippedCount: 0 });
     expect(first).toMatchObject({ parentId: null, status: "resolved" });
     expect(second).toMatchObject({ parentId: first.id, status: "resolved" });
-    expect(latest).toMatchObject({ parentId: second.id, status: "active" });
+    expect(latest).toMatchObject({ parentId: second.id, status: "pending" });
     expect((await service.projects.get(project.id))?.focusNodeId).toBe(latest.id);
   });
 
@@ -184,7 +198,7 @@ describe("DiscussionService v0.5", () => {
     expect(firstNew.parentId).toBeNull();
     expect(firstNew.status).toBe("resolved");
     expect(latestNew.parentId).toBe(firstNew.id);
-    expect(latestNew.status).toBe("active");
+    expect(latestNew.status).toBe("pending");
     expect((await service.nodes.get(existing.id))?.parentId).toBeNull();
     expect((await service.nodes.get(oldActive.id))?.status).toBe("pending");
   });
@@ -206,12 +220,12 @@ describe("DiscussionService v0.5", () => {
     expect(result).toMatchObject({ createdCount: 1, skippedCount: 1, activeNodeId: existingLatest.id });
     expect(await service.nodes.get(existingLatest.id)).toMatchObject({
       parentId: null,
-      status: "active",
+      status: "resolved",
     });
     expect((await service.nodes.get(oldActive.id))?.status).toBe("pending");
     const newHistory = (await service.nodes.listForProject(project.id))
       .find((node) => node.question === "New history")!;
-    expect(newHistory).toMatchObject({ parentId: null, status: "resolved" });
+    expect(newHistory).toMatchObject({ parentId: null, status: "pending" });
   });
 
   it("deduplicates within a project while allowing the same source question in another project", async () => {
@@ -278,6 +292,7 @@ describe("DiscussionService v0.5", () => {
     const project = await service.createProject("Project", "Goal");
     const root = await service.createNode({ projectId: project.id, ...capture("Root", 1) });
     const wrong = await service.createNode({ projectId: project.id, ...capture("Wrong", 2), parentId: root.id });
+    await service.setStatus(root.id, "pending");
     const sibling = await service.createNode({ projectId: project.id, ...capture("Sibling", 3), parentId: root.id });
     const child = await service.createNode({ projectId: project.id, ...capture("Child", 4), parentId: wrong.id });
 
@@ -339,15 +354,15 @@ describe("DiscussionService v0.5", () => {
     expect(storedChild?.parentId).toBe(root.id);
   });
 
-  it("lists pending and parked sibling/child branches but hides resolved ones", async () => {
+  it("lists pending sibling branches but hides completed ones", async () => {
     const project = await service.createProject("Project", "Goal");
     const root = await service.createNode({ projectId: project.id, ...capture("Root", 1) });
     const focus = await service.createNode({ projectId: project.id, ...capture("Focus", 2), parentId: root.id });
+    await service.setStatus(root.id, "pending");
     const pending = await service.createNode({ projectId: project.id, ...capture("Pending", 3), parentId: root.id, status: "pending" });
-    const parked = await service.createNode({ projectId: project.id, ...capture("Parked", 4), parentId: focus.id, status: "parked" });
-    await service.createNode({ projectId: project.id, ...capture("Resolved", 5), parentId: root.id, status: "resolved" });
+    await service.createNode({ projectId: project.id, ...capture("Resolved", 5), parentId: focus.id, status: "resolved" });
     const nodes = await service.nodes.listForProject(project.id);
-    expect(getOpenBranches(nodes, focus.id).map((node) => node.id)).toEqual([pending.id, parked.id]);
+    expect(getOpenBranches(nodes, focus.id).map((node) => node.id)).toEqual([pending.id]);
   });
 
   it("undoes the most recent high-confidence automatic parent link", async () => {
@@ -371,19 +386,34 @@ describe("DiscussionService v0.5", () => {
     expect((await service.nodes.get(child.id))?.parentId).toBe(root.id);
   });
 
+  it("deletes a node together with all of its descendants", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const root = await service.createNode({ projectId: project.id, ...capture("Root", 1) });
+    const child = await service.createNode({ projectId: project.id, ...capture("Child", 2), parentId: root.id });
+    const grandchild = await service.createNode({ projectId: project.id, ...capture("Grandchild", 3), parentId: child.id });
+
+    const deletedIds = await service.deleteNodeWithDescendants(child.id);
+
+    expect(new Set(deletedIds)).toEqual(new Set([child.id, grandchild.id]));
+    expect(await service.nodes.get(root.id)).toBeDefined();
+    expect(await service.nodes.get(child.id)).toBeUndefined();
+    expect(await service.nodes.get(grandchild.id)).toBeUndefined();
+    expect((await service.projects.get(project.id))?.focusNodeId).toBe(root.id);
+  });
+
   it("retains nodes, status, parent and focus after IndexedDB reopens", async () => {
     const databaseName = database.name;
     const project = await service.createProject("Persistent", "Goal");
     const root = await service.createNode({ projectId: project.id, ...capture("Root", 1) });
     const child = await service.createNode({ projectId: project.id, ...capture("Child", 2), parentId: root.id });
-    await service.setStatus(child.id, "parked");
+    await service.setStatus(child.id, "resolved");
     database.close();
 
     database = new DiscussionMapDatabase(databaseName);
     service = new DiscussionService(database);
     const restored = await service.nodes.get(child.id);
     expect(restored?.parentId).toBe(root.id);
-    expect(restored?.status).toBe("parked");
+    expect(restored?.status).toBe("resolved");
     expect((await service.projects.get(project.id))?.focusNodeId).toBe(child.id);
   });
 
@@ -417,6 +447,18 @@ describe("DiscussionService v0.5", () => {
       createdAt: now,
       updatedAt: now,
     });
+    await legacy.table("nodes").add({
+      id: "node-child",
+      projectId: "project-old",
+      parentId: "node-old",
+      question: "Legacy child",
+      summary: "Legacy child",
+      status: "active",
+      chatId: "chat-1",
+      messageId: "message-2",
+      createdAt: now + 1,
+      updatedAt: now + 1,
+    });
     legacy.close();
 
     const migrated = new DiscussionMapDatabase(legacyName);
@@ -427,9 +469,10 @@ describe("DiscussionService v0.5", () => {
       ...capture("Shared question", 1),
     });
 
-    expect(await migrated.nodes.get("node-old")).toBeDefined();
+    expect(await migrated.nodes.get("node-old")).toMatchObject({ status: "resolved" });
+    expect(await migrated.nodes.get("node-child")).toMatchObject({ status: "pending" });
     expect(duplicateAcrossProjects.projectId).toBe(secondProject.id);
-    expect(await migrated.nodes.count()).toBe(2);
+    expect(await migrated.nodes.count()).toBe(3);
     migrated.close();
     await migrated.delete();
   });

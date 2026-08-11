@@ -31,6 +31,10 @@ const browserMock = String.raw`<script>
           },
         },
       },
+      permissions: {
+        async contains() { return true; },
+        async request() { return true; },
+      },
       tabs: {
         onActivated: event,
         onUpdated: event,

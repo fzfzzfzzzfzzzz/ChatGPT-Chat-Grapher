@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   fingerprintMessageText,
   getAllCapturedQuestions,
+  getCapturedQuestionFromElement,
   getCapturedQuestions,
   locateQuestionMessage,
   locateQuestionMessageWithHistory,
@@ -170,6 +171,86 @@ describe("locateQuestionMessage", () => {
 });
 
 describe("getCapturedQuestions", () => {
+  it("captures one selected question with only its following assistant answer", () => {
+    vi.stubGlobal("location", { href: "https://chatgpt.com/c/chat-selected" });
+    vi.stubGlobal("document", { title: "Selected discussion | ChatGPT" });
+
+    const makeMessage = (role: "user" | "assistant", text: string, turnId: string) => {
+      const message = {
+        dataset: role === "user" ? { messageId: `${turnId}-message` } : {},
+        innerText: text,
+        matches: (selector: string) => selector === `[data-message-author-role="${role}"]`,
+        closest: (selector: string) => selector.includes("section") ? container : null,
+        querySelector: () => null,
+      } as unknown as HTMLElement;
+      const container = {
+        dataset: { turnId },
+        querySelector: () => message,
+      } as unknown as HTMLElement;
+      return message;
+    };
+    const firstQuestion = makeMessage("user", "  First selected question  ", "turn-1");
+    const firstAnswer = makeMessage("assistant", " First answer\nwith details ", "answer-1");
+    const answerContinuation = makeMessage("assistant", "Conclusion", "answer-1b");
+    const secondQuestion = makeMessage("user", "Second question", "turn-2");
+    const secondAnswer = makeMessage("assistant", "Must not be included", "answer-2");
+    const sequence = [
+      firstQuestion,
+      firstAnswer,
+      answerContinuation,
+      secondQuestion,
+      secondAnswer,
+    ];
+    const root = {
+      querySelectorAll: (selector: string) => {
+        if (selector === '[data-message-author-role="user"]') {
+          return [firstQuestion, secondQuestion];
+        }
+        if (selector.includes('[data-message-author-role="assistant"]')) return sequence;
+        return [];
+      },
+    } as unknown as ParentNode;
+
+    expect(getCapturedQuestionFromElement(firstQuestion, root)).toMatchObject({
+      question: "First selected question",
+      chatId: "chat-selected",
+      messageId: "turn-1-message",
+      assistantContext: "First answer with details\n\nConclusion",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("bounds a selected assistant answer while retaining its conclusion", () => {
+    vi.stubGlobal("location", { href: "https://chatgpt.com/c/chat-long-answer" });
+    vi.stubGlobal("document", { title: "Long answer | ChatGPT" });
+    const container = {
+      dataset: { turnId: "turn-long" },
+      querySelector: () => question,
+    } as unknown as HTMLElement;
+    const question = {
+      dataset: { messageId: "message-long" },
+      innerText: "Question",
+      matches: (selector: string) => selector === '[data-message-author-role="user"]',
+      closest: () => container,
+    } as unknown as HTMLElement;
+    const answer = {
+      dataset: {},
+      innerText: `${"a".repeat(6_500)}THE_END`,
+      matches: (selector: string) => selector === '[data-message-author-role="assistant"]',
+    } as unknown as HTMLElement;
+    const root = {
+      querySelectorAll: (selector: string) => selector === '[data-message-author-role="user"]'
+        ? [question]
+        : [question, answer],
+    } as unknown as ParentNode;
+
+    const captured = getCapturedQuestionFromElement(question, root);
+    expect(captured?.assistantContext).toHaveLength(6_000);
+    expect(captured?.assistantContext).toContain("…");
+    expect(captured?.assistantContext).toMatch(/THE_END$/);
+    vi.unstubAllGlobals();
+  });
+
   it("captures every user question in page order with stable locators", () => {
     vi.stubGlobal("location", { href: "https://chatgpt.com/c/chat-1" });
     vi.stubGlobal("document", { title: "Imported discussion | ChatGPT" });

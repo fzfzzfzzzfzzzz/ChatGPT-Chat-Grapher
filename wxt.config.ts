@@ -17,7 +17,7 @@ export default defineConfig({
   manifest: ({ browser }) => ({
     name: "Chat Graph",
     description: "Keep the current ChatGPT question and its parent visible while you work.",
-    version: "0.8.1",
+    version: "0.9.0",
     ...(browser === "chrome"
       ? { minimum_chrome_version: "116" }
       : {
@@ -30,6 +30,9 @@ export default defineConfig({
           },
         }),
     permissions: ["storage"],
+    ...(browser === "chrome"
+      ? { optional_host_permissions: ["https://*/*"] }
+      : { optional_permissions: ["https://*/*"] }),
     host_permissions: [
       "https://chatgpt.com/*",
       "https://chat.openai.com/*",
@@ -38,5 +41,15 @@ export default defineConfig({
     action: {
       default_title: "Open Chat Graph",
     },
+    ...(browser === "firefox"
+      ? {
+          commands: {
+            "open-chat-graph-sidebar": {
+              suggested_key: { default: "Alt+Shift+G" },
+              description: "Open the Chat Graph sidebar",
+            },
+          },
+        }
+      : {}),
   }),
 });

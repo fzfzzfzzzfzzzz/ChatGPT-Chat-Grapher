@@ -18,16 +18,13 @@ type Props = {
   onMakeCurrent: (node: QuestionNode) => void;
   onViewDetails: (node: QuestionNode) => void;
   onRequestLocate: (node: QuestionNode) => void;
-  onRequestDelete: (node: QuestionNode) => void;
+  onRequestDelete: (node: QuestionNode, deleteDescendants?: boolean) => void;
   onSetStatus: (node: QuestionNode, status: NodeStatus) => Promise<boolean>;
 };
 
 const NODE_COLORS: Record<QuestionNode["status"], string> = {
-  active: "#f97316",
   pending: "#94a3b8",
   resolved: "#22c55e",
-  parked: "#f59e0b",
-  rejected: "#cbd5e1",
 };
 
 export function GraphView({
@@ -138,13 +135,13 @@ export function GraphView({
     setContextMenu(undefined);
   }
 
-  function requestNodeDelete() {
+  function requestNodeDelete(deleteDescendants = false) {
     if (!contextMenu) return;
     const node = contextMenu.node;
     setSelectedNodeId(node.id);
     setContextMenu(undefined);
     setStatusMenuOpen(false);
-    onRequestDelete(node);
+    onRequestDelete(node, deleteDescendants);
   }
 
   function toggleStatusMenu() {
@@ -187,8 +184,10 @@ export function GraphView({
   return (
     <section className="graph-card">
       <div className="graph-card__legend" aria-label="状态图例">
-        {Object.entries(NODE_COLORS).map(([status, color]) => (
-          <span key={status}><i style={{ background: color }} /> {status}</span>
+        {NODE_STATUS_OPTIONS.map((status) => (
+          <span key={status}>
+            <i style={{ background: NODE_COLORS[status] }} /> {NODE_STATUS_LABELS[status]}
+          </span>
         ))}
       </div>
       <div
@@ -286,14 +285,38 @@ export function GraphView({
               type="button"
               role="menuitem"
               disabled={updatingNodeId === contextMenu.node.id}
-              onClick={requestNodeDelete}
+              onClick={() => requestNodeDelete(false)}
             >
               删除节点
+            </button>
+            <button
+              className="graph-context-menu__delete"
+              type="button"
+              role="menuitem"
+              disabled={updatingNodeId === contextMenu.node.id || countDescendants(questions, contextMenu.node.id) === 0}
+              onClick={() => requestNodeDelete(true)}
+            >
+              删除节点及其子节点
             </button>
           </div>
         ) : null}
       </div>
-      <p className="graph-card__hint">单击设为 Current；再次单击可确认定位；双击折叠或展开子树；右键查看详情、标记状态或删除。蓝色边表示 Current Path。</p>
+      <p className="graph-card__hint">单击设为当前节点；再次单击可确认定位；双击折叠或展开子树；右键查看详情、标记状态或删除。蓝色边表示当前路径。</p>
     </section>
   );
+}
+
+function countDescendants(nodes: QuestionNode[], rootId: string): number {
+  const ids = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of nodes) {
+      if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) {
+        ids.add(node.id);
+        changed = true;
+      }
+    }
+  }
+  return ids.size - 1;
 }

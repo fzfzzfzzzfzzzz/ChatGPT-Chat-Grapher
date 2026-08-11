@@ -64,13 +64,6 @@ export class NodeRepository {
       .sortBy("createdAt");
   }
 
-  getActive(projectId: string): Promise<QuestionNode | undefined> {
-    return this.database.nodes
-      .where("[projectId+status]")
-      .equals([projectId, "active"])
-      .first();
-  }
-
   async update(
     id: string,
     changes: Partial<Omit<QuestionNode, "id" | "projectId" | "question" | "chatId" | "messageId" | "createdAt">>,

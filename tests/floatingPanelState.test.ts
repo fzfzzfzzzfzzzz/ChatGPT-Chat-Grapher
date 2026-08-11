@@ -23,7 +23,7 @@ function node(
     parentId,
     question,
     summary: `Summary: ${question}`,
-    status: "active",
+    status: "pending",
     chatId: "chat-1",
     messageId: `message-${id}`,
     createdAt,

@@ -13,7 +13,7 @@ type LegacyBranch = {
   title: string;
   description?: string;
   summary?: string;
-  status: QuestionNode["status"];
+  status: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -115,7 +115,7 @@ export class DiscussionMapDatabase extends Dexie {
             parentId: branch.parentId ?? null,
             question: branch.title,
             summary: branch.summary?.trim() || branch.description?.trim() || branch.title,
-            status: branch.status,
+            status: normalizeLegacyNodeStatus(branch.status),
             chatId,
             messageId: `legacy-${branch.id}`,
             createdAt: branch.createdAt,
@@ -126,9 +126,12 @@ export class DiscussionMapDatabase extends Dexie {
 
         const projects = (await transaction.table("projects").toArray()) as Project[];
         for (const project of projects) {
-          const active = nodes.find(
-            (node) => node.projectId === project.id && node.status === "active",
+          const activeBranch = branches.find(
+            (branch) => branch.projectId === project.id && branch.status === "active",
           );
+          const active = activeBranch
+            ? nodes.find((node) => node.id === activeBranch.id)
+            : undefined;
           if (active) {
             await transaction.table("projects").update(project.id, {
               focusNodeId: active.id,
@@ -160,7 +163,34 @@ export class DiscussionMapDatabase extends Dexie {
         "id, projectId, status, &[projectId+chatId+messageId], [projectId+chatId], chatId, createdAt, updatedAt",
       nodeEvents: "id, projectId, nodeId, type, source, createdAt, undoneAt",
     });
+
+    this.version(8)
+      .stores({
+        projects: "id, updatedAt",
+        nodes:
+          "id, projectId, parentId, status, [projectId+status], &[projectId+chatId+messageId], [projectId+chatId], chatId, createdAt, updatedAt",
+        candidates:
+          "id, projectId, status, &[projectId+chatId+messageId], [projectId+chatId], chatId, createdAt, updatedAt",
+        nodeEvents: "id, projectId, nodeId, type, source, createdAt, undoneAt",
+      })
+      .upgrade(async (transaction) => {
+        type StoredLegacyNode = Omit<QuestionNode, "status"> & { status: string };
+        const table = transaction.table("nodes");
+        const nodes = await table.toArray() as StoredLegacyNode[];
+        const parentIds = new Set(
+          nodes.flatMap((node) => node.parentId ? [node.parentId] : []),
+        );
+        await table.bulkPut(nodes.map((node) => ({
+          ...node,
+          status: normalizeLegacyNodeStatus(node.status, parentIds.has(node.id)),
+        })));
+      });
   }
+}
+
+function normalizeLegacyNodeStatus(status: unknown, hasChildren = false): QuestionNode["status"] {
+  if (hasChildren || status === "resolved" || status === "rejected") return "resolved";
+  return "pending";
 }
 
 export const db = new DiscussionMapDatabase();

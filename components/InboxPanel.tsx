@@ -18,8 +18,8 @@ export function InboxPanel({ candidates, nodes, mediumConfidence, onPromote, onD
     return (
       <section className="empty-state empty-state--compact">
         <span className="empty-state__icon" aria-hidden="true"><Inbox size={22} /></span>
-        <h2>Inbox 已清空</h2>
-        <p>低置信度问题和 AI 失败的 Candidate 会在这里等待整理。</p>
+        <h2>待整理已清空</h2>
+        <p>低置信度问题和 AI 处理失败的问题会在这里等待整理。</p>
       </section>
     );
   }
@@ -27,7 +27,7 @@ export function InboxPanel({ candidates, nodes, mediumConfidence, onPromote, onD
   return (
     <section className="inbox-panel">
       <div className="section-heading">
-        <div><div className="section-label">BRANCH INBOX</div><h2>等待确认的问题</h2></div>
+        <div><div className="section-label">待整理</div><h2>等待确认的问题</h2></div>
         <span>{candidates.length}</span>
       </div>
       <div className="candidate-list">
@@ -52,7 +52,7 @@ export function InboxPanel({ candidates, nodes, mediumConfidence, onPromote, onD
                         setChoices((current) => ({ ...current, [candidate.id]: event.target.value }))
                       }
                     >
-                      <option value="root">No Parent / 新 Root</option>
+                      <option value="root">无父节点 / 新根节点</option>
                       {candidate.recommendations.map((recommendation) => {
                         const node = nodes.find((item) => item.id === recommendation.nodeId);
                         return node ? (
@@ -79,7 +79,7 @@ export function InboxPanel({ candidates, nodes, mediumConfidence, onPromote, onD
                           .finally(() => setBusyId(undefined));
                       }}
                     >
-                      <Link2 size={14} /> {selected === "root" ? "设为 Root" : "确认 Parent"}
+                      <Link2 size={14} /> {selected === "root" ? "设为根节点" : "确认父节点"}
                     </button>
                     <button
                       className="button button--danger"
@@ -90,7 +90,7 @@ export function InboxPanel({ candidates, nodes, mediumConfidence, onPromote, onD
                         void onDelete(candidate).finally(() => setBusyId(undefined));
                       }}
                     >
-                      <Trash2 size={14} /> Ignore
+                      <Trash2 size={14} /> 忽略
                     </button>
                   </div>
                 </>

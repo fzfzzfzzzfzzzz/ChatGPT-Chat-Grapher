@@ -1,4 +1,10 @@
-import type { CapturedQuestion, MessageLocator, NodeStatus } from "../types/domain";
+import type {
+  AIProviderId,
+  AIProviderProfile,
+  CapturedQuestion,
+  MessageLocator,
+  NodeStatus,
+} from "../types/domain";
 
 export type FloatingPanelMode = "collapsed" | "working";
 
@@ -51,8 +57,42 @@ export type FloatingPanelState = {
   parentOptions: FloatingPanelNodeOption[];
 };
 
+export type PanelActionContext = {
+  chatId?: string;
+  viewingNodeId?: string;
+};
+
+export type PanelActionErrorCode =
+  | "NOT_FOUND"
+  | "STALE_STATE"
+  | "INVALID_OPERATION"
+  | "INTERNAL_ERROR";
+
+export type PanelMutationResponse<T = Record<string, never>> =
+  | { ok: true; state: FloatingPanelState; result: T }
+  | { ok: false; code: PanelActionErrorCode; error: string };
+
+export type PanelQuestionSource =
+  | { kind: "node"; id: string }
+  | { kind: "candidate"; id: string };
+
+export type PanelDeleteResult = {
+  deletedNodeId: string;
+  deletedNodeCount: number;
+  nextViewingNodeId?: string;
+};
+
+export type PanelParentResult = {
+  nodeId: string;
+  parentId: string | null;
+};
+
 export type PanelActionResponse =
   | { ok: true }
+  | { ok: false; error: string };
+
+export type TestAIProviderResponse =
+  | { ok: true; providerId: AIProviderId; model: string }
   | { ok: false; error: string };
 
 export type BuildCurrentPageGraphResponse =
@@ -61,6 +101,7 @@ export type BuildCurrentPageGraphResponse =
       createdCount: number;
       skippedCount: number;
       activeNodeId: string;
+      state: FloatingPanelState;
     }
   | { ok: false; error: string };
 
@@ -83,12 +124,27 @@ export type NavigateToNodeResponse =
 
 export type ExtensionMessage =
   | { type: "GET_FLOATING_PANEL_STATE"; chatId?: string; selectedNodeId?: string }
-  | { type: "OPEN_SIDE_PANEL"; projectId?: string }
+  | { type: "OPEN_SIDE_PANEL"; projectId?: string; view?: "graph" }
   | { type: "DISCUSSION_MAP_CHANGED" }
   | { type: "FLOATING_PANEL_STATE_UPDATED"; state: FloatingPanelState }
   | { type: "CHATGPT_LOCATION_CHANGED"; chatId?: string }
-  | { type: "CAPTURE_QUESTION"; captured: CapturedQuestion; manual?: boolean }
-  | { type: "BUILD_CURRENT_PAGE_GRAPH"; capturedQuestions: CapturedQuestion[] }
+  | {
+      type: "CAPTURE_QUESTION";
+      captured: CapturedQuestion;
+      manual?: boolean;
+      context?: PanelActionContext;
+    }
+  | {
+      type: "TEST_AI_PROVIDER";
+      providerId: AIProviderId;
+      profile: AIProviderProfile;
+      timeoutMs: number;
+    }
+  | {
+      type: "BUILD_CURRENT_PAGE_GRAPH";
+      capturedQuestions: CapturedQuestion[];
+      context: PanelActionContext;
+    }
   | {
       type: "REFINE_MESSAGE_LOCATOR";
       chatId: string;
@@ -101,27 +157,41 @@ export type ExtensionMessage =
       openMode?: ConversationOpenMode;
       sourceTabId?: number;
     }
+  | {
+      type: "NAVIGATE_TO_QUESTION";
+      source: PanelQuestionSource;
+      openMode?: ConversationOpenMode;
+      sourceTabId?: number;
+    }
   | { type: "FOCUS_PANEL_PARENT"; currentNodeId: string }
-  | { type: "SELECT_PANEL_PROJECT"; projectId: string }
-  | { type: "CREATE_PANEL_PROJECT"; title: string; goal: string }
-  | { type: "DELETE_PANEL_PROJECT"; projectId: string }
-  | { type: "DELETE_PANEL_NODE"; nodeId: string }
-  | { type: "SET_CAPTURE_SERVICE_ENABLED"; enabled: boolean }
+  | { type: "SELECT_PANEL_PROJECT"; projectId: string; context: PanelActionContext }
+  | { type: "CREATE_PANEL_PROJECT"; title: string; goal: string; context: PanelActionContext }
+  | { type: "DELETE_PANEL_PROJECT"; projectId: string; context: PanelActionContext }
+  | {
+      type: "DELETE_PANEL_NODE";
+      nodeId: string;
+      deleteDescendants?: boolean;
+      context: PanelActionContext;
+    }
+  | { type: "SET_CAPTURE_SERVICE_ENABLED"; enabled: boolean; context: PanelActionContext }
   | {
       type: "IGNORE_PANEL_CURRENT";
       currentNodeId?: string;
       currentCandidateId?: string;
+      context: PanelActionContext;
     }
   | {
       type: "SET_PANEL_NODE_STATUS";
       nodeId: string;
       status: NodeStatus;
+      context: PanelActionContext;
     }
   | {
       type: "SET_PANEL_PARENT";
       parentId: string | null;
       currentNodeId?: string;
       currentCandidateId?: string;
+      context: PanelActionContext;
     }
   | {
       type: "LOCATE_QUESTION";
@@ -132,7 +202,12 @@ export type ExtensionMessage =
     };
 
 export type CaptureQuestionResponse =
-  | { ok: true; destination: "graph" | "inbox" | "duplicate" | "disabled"; nodeId?: string }
+  | {
+      ok: true;
+      destination: "graph" | "inbox" | "duplicate" | "disabled";
+      nodeId?: string;
+      state: FloatingPanelState;
+    }
   | { ok: false; error: string };
 
 export type LocateQuestionMethod = "messageId" | "turnId" | "legacyMessageId" | "anchor";
@@ -151,5 +226,24 @@ export function isExtensionMessage(value: unknown): value is ExtensionMessage {
       typeof value === "object" &&
       "type" in value &&
       typeof (value as { type?: unknown }).type === "string",
+  );
+}
+
+export function isTestAIProviderMessage(
+  message: ExtensionMessage,
+): message is Extract<ExtensionMessage, { type: "TEST_AI_PROVIDER" }> {
+  if (message.type !== "TEST_AI_PROVIDER") return false;
+  const profile = message.profile as unknown;
+  return Boolean(
+    typeof message.providerId === "string" &&
+      Number.isFinite(message.timeoutMs) &&
+      profile &&
+      typeof profile === "object" &&
+      "apiKey" in profile &&
+      typeof profile.apiKey === "string" &&
+      "baseUrl" in profile &&
+      typeof profile.baseUrl === "string" &&
+      "model" in profile &&
+      typeof profile.model === "string",
   );
 }
