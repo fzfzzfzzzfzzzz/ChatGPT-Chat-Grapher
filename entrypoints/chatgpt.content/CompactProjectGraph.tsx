@@ -1,6 +1,7 @@
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -127,6 +128,35 @@ export function CompactProjectGraph({
     }
   }, [contextMenu, positionedById]);
 
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const menu = menuRef.current;
+    if (!contextMenu || !canvas || !menu) return;
+
+    const canvasRect = canvas.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const inset = 8;
+    const nextX = Math.min(
+      Math.max(inset, contextMenu.x),
+      Math.max(inset, canvasRect.width - menuRect.width - inset),
+    );
+    const nextY = Math.min(
+      Math.max(inset, contextMenu.y),
+      Math.max(inset, canvasRect.height - menuRect.height - inset),
+    );
+
+    if (nextX !== contextMenu.x || nextY !== contextMenu.y) {
+      setContextMenu((current) => current ? { ...current, x: nextX, y: nextY } : current);
+    }
+  }, [
+    confirmingDelete?.deleteDescendants,
+    confirmingDelete?.nodeId,
+    contextMenu?.nodeId,
+    contextMenu?.x,
+    contextMenu?.y,
+    statusMenuOpen,
+  ]);
+
   useEffect(() => {
     setViewport(DEFAULT_VIEWPORT);
     setTooltip(undefined);
@@ -193,7 +223,7 @@ export function CompactProjectGraph({
     setContextMenu({
       nodeId,
       x: Math.min(Math.max(8, rawX), Math.max(8, rect.width - 210)),
-      y: Math.min(Math.max(8, rawY), Math.max(8, rect.height - 154)),
+      y: Math.min(Math.max(8, rawY), Math.max(8, rect.height - 8)),
     });
     setStatusMenuOpen(false);
     setConfirmingDelete(undefined);

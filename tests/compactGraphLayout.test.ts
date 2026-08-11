@@ -27,6 +27,7 @@ describe("floating-panel graph layout", () => {
     expect(byId.get("child-a")!.x).toBeGreaterThan(byId.get("root")!.x);
     expect(byId.get("grandchild")!.x).toBeGreaterThan(byId.get("child-a")!.x);
     expect(byId.get("child-a")!.y).not.toBe(byId.get("child-b")!.y);
+    expect(byId.get("grandchild")!.y).toBe(byId.get("child-a")!.y);
     expect(layout.edges).toHaveLength(3);
   });
 

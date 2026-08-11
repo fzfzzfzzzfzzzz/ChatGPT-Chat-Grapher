@@ -1,7 +1,9 @@
 import type { FloatingPanelGraphNode } from "../shared/messages";
+import { layoutForest } from "./treeLayout";
 
 const HORIZONTAL_GAP = 68;
 const VERTICAL_GAP = 44;
+const FOREST_GAP = 22;
 const PADDING = 24;
 const MIN_WIDTH = 292;
 const MIN_HEIGHT = 220;
@@ -30,35 +32,28 @@ export function layoutCompactGraph(nodes: FloatingPanelGraphNode[]): CompactGrap
   }
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const depths = nodes.map((node) => depthFor(node, byId));
-  const minimumDepth = Math.min(...depths);
-  const normalizedDepths = depths.map((depth) => depth - minimumDepth);
-  const maximumDepth = Math.max(...normalizedDepths);
-  const levels = new Map<number, FloatingPanelGraphNode[]>();
-
-  nodes.forEach((node, index) => {
-    const depth = normalizedDepths[index] ?? 0;
-    const level = levels.get(depth) ?? [];
-    level.push(node);
-    levels.set(depth, level);
+  const positions = layoutForest(nodes, {
+    horizontalGap: HORIZONTAL_GAP,
+    verticalGap: VERTICAL_GAP,
+    forestGap: FOREST_GAP,
   });
-
-  const widestLevel = Math.max(...Array.from(levels.values(), (level) => level.length));
-  const width = Math.max(MIN_WIDTH, maximumDepth * HORIZONTAL_GAP + PADDING * 2);
-  const height = Math.max(MIN_HEIGHT, (widestLevel - 1) * VERTICAL_GAP + PADDING * 2);
-  const positionedNodes: CompactGraphPositionedNode[] = [];
-
-  for (const [depth, level] of levels) {
-    level.forEach((node, index) => {
-      const x = maximumDepth === 0
-        ? width / 2
-        : PADDING + depth * ((width - PADDING * 2) / maximumDepth);
-      const y = level.length === 1
-        ? height / 2
-        : PADDING + index * ((height - PADDING * 2) / (level.length - 1));
-      positionedNodes.push({ ...node, x, y });
-    });
-  }
+  const rawPositions = [...positions.values()];
+  const maximumX = Math.max(...rawPositions.map(({ x }) => x));
+  const minimumY = Math.min(...rawPositions.map(({ y }) => y));
+  const maximumY = Math.max(...rawPositions.map(({ y }) => y));
+  const rawHeight = maximumY - minimumY;
+  const width = Math.max(MIN_WIDTH, maximumX + PADDING * 2);
+  const height = Math.max(MIN_HEIGHT, rawHeight + PADDING * 2);
+  const offsetX = (width - maximumX) / 2;
+  const offsetY = (height - rawHeight) / 2 - minimumY;
+  const positionedNodes = nodes.map<CompactGraphPositionedNode>((node) => {
+    const position = positions.get(node.id) ?? { x: 0, y: 0 };
+    return {
+      ...node,
+      x: position.x + offsetX,
+      y: position.y + offsetY,
+    };
+  });
 
   const edges = nodes.flatMap<CompactGraphEdge>((node) => {
     if (!node.parentId || node.parentId === node.id || !byId.has(node.parentId)) return [];
@@ -70,23 +65,4 @@ export function layoutCompactGraph(nodes: FloatingPanelGraphNode[]): CompactGrap
   });
 
   return { width, height, nodes: positionedNodes, edges };
-}
-
-function depthFor(
-  node: FloatingPanelGraphNode,
-  byId: Map<string, FloatingPanelGraphNode>,
-): number {
-  let depth = 0;
-  let current = node;
-  const visited = new Set([node.id]);
-
-  while (current.parentId) {
-    const parent = byId.get(current.parentId);
-    if (!parent || visited.has(parent.id)) break;
-    visited.add(parent.id);
-    depth += 1;
-    current = parent;
-  }
-
-  return depth;
 }

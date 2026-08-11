@@ -2,6 +2,17 @@
 
 本项目的版本变化记录在此文件中。
 
+## Unreleased
+
+- 增加带 schema 版本的 JSON 数据备份，覆盖全部项目、问题节点、待讨论候选和撤销事件，不导出 AI 设置或 API Key。
+- 导入备份时校验格式与图关系，在单个 IndexedDB 事务中创建新的项目副本并重映射内部 ID，不覆盖现有数据。
+- 增加 GitHub Bug Report 和 Feature Request Issue 表单。
+
+## v0.9.1 — 图布局与菜单定位修复
+
+- 完整图和浮窗图共用树形森林布局，让单子节点与父节点水平对齐，并保持多根图之间的间距。
+- 修正浮窗图右键菜单在边缘与长菜单场景下的定位，避免菜单超出画布。
+
 ## v0.9.0 — 多厂商 AI API
 
 - 父节点推荐支持百炼、OpenAI、Anthropic、Gemini、DeepSeek、OpenRouter 和自定义 OpenAI 兼容服务。

@@ -778,7 +778,7 @@
   cursor: grabbing;
 }
 
-.chat-graph-map__canvas svg {
+.chat-graph-map__canvas > svg {
   display: block;
   width: 100%;
   height: 100%;
@@ -932,12 +932,15 @@
   z-index: 4;
   display: grid;
   width: 202px;
+  max-height: calc(100% - 16px);
   gap: 4px;
   padding: 6px;
   border: 1px solid var(--cg-border);
   border-radius: 10px;
   background: var(--cg-bg-solid);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .chat-graph-map__context-title {
