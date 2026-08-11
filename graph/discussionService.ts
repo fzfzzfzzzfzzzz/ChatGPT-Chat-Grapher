@@ -12,7 +12,6 @@ import type {
   QuestionNode,
 } from "../types/domain";
 import { requireText } from "../utils/text";
-import { canBeParentNode } from "./parentEligibility";
 import { isDescendant } from "./questionTree";
 
 export type CreateNodeInput = CapturedQuestion & {
@@ -219,9 +218,6 @@ export class DiscussionService {
           if (!parent || parent.projectId !== input.projectId) {
             throw new Error("Parent question must belong to the same project.");
           }
-          if (!canBeParentNode(parent)) {
-            throw new Error("A completed question cannot be selected as a parent.");
-          }
         }
 
         const status = input.status ?? "pending";
@@ -236,7 +232,6 @@ export class DiscussionService {
           ...(input.messageAnchor ? { messageAnchor: input.messageAnchor } : {}),
           ...(input.messageLocator ? { messageLocator: input.messageLocator } : {}),
         });
-        if (parentId) await this.nodes.update(parentId, { status: "resolved" });
         await this.projects.update(input.projectId, { focusNodeId: node.id });
         return node;
       },
@@ -300,15 +295,6 @@ export class DiscussionService {
 
         if (!finalNode) throw new Error("The latest question could not be imported.");
 
-        const allNodes = await this.nodes.listForProject(projectId);
-        const parentIds = new Set(
-          allNodes.flatMap((node) => node.parentId ? [node.parentId] : []),
-        );
-        for (const node of createdNodes) {
-          await this.nodes.update(node.id, {
-            status: parentIds.has(node.id) ? "resolved" : "pending",
-          });
-        }
         await this.projects.update(projectId, { focusNodeId: finalNode.id });
 
         return {
@@ -357,16 +343,12 @@ export class DiscussionService {
         if (parentId) {
           const parent = allNodes.find((candidate) => candidate.id === parentId);
           if (!parent) throw new Error("Parent question must belong to the same project.");
-          if (!canBeParentNode(parent)) {
-            throw new Error("A completed question cannot be selected as a parent.");
-          }
           if (isDescendant(allNodes, parentId, nodeId)) {
             throw new Error("Moving this question would create a cycle.");
           }
         }
         const beforeParentId = node.parentId;
         const updated = await this.nodes.update(nodeId, { parentId });
-        if (parentId) await this.nodes.update(parentId, { status: "resolved" });
         await this.events.create({
           projectId: node.projectId,
           nodeId,
@@ -459,9 +441,6 @@ export class DiscussionService {
         const children = await this.nodes.listChildren(node.projectId, node.id);
         for (const child of children) {
           await this.nodes.update(child.id, { parentId: node.parentId });
-        }
-        if (node.parentId && children.length) {
-          await this.nodes.update(node.parentId, { status: "resolved" });
         }
         await this.database.nodeEvents.where("nodeId").equals(nodeId).delete();
         await this.nodes.delete(nodeId);

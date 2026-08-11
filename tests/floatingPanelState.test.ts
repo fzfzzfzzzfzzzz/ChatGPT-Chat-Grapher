@@ -301,7 +301,7 @@ describe("v0.6 floating panel state", () => {
     ]);
   });
 
-  it("does not restore a completed previous question as a Parent candidate", () => {
+  it("restores a completed previous question as a Parent candidate", () => {
     const completedPrevious = {
       ...node("node-completed-previous", "刚刚结束的上一问", 3),
       status: "resolved" as const,
@@ -328,14 +328,22 @@ describe("v0.6 floating panel state", () => {
       mediumConfidence: 0.6,
     });
 
-    expect(state.recommendedParents).toEqual([{
-      id: availableMatch.id,
-      question: availableMatch.question,
-      confidence: 0.74,
-    }]);
+    expect(state.recommendedParents).toEqual([
+      {
+        id: completedPrevious.id,
+        question: completedPrevious.question,
+        confidence: 0.95,
+        isPrevious: true,
+      },
+      {
+        id: availableMatch.id,
+        question: availableMatch.question,
+        confidence: 0.74,
+      },
+    ]);
   });
 
-  it("keeps completed nodes in the graph but removes them from Parent choices", () => {
+  it("keeps completed nodes available in Parent choices", () => {
     const completed = { ...node("node-completed", "已结束问题", 1), status: "resolved" as const };
     const available = { ...node("node-available", "仍可继续的问题", 2), status: "pending" as const };
     const state = buildFloatingPanelState({
@@ -355,8 +363,8 @@ describe("v0.6 floating panel state", () => {
     });
 
     expect(state.graphNodes.map(({ id }) => id)).toContain(completed.id);
-    expect(state.recommendedParents.map(({ id }) => id)).toEqual([available.id]);
-    expect(state.parentOptions.map(({ id }) => id)).toEqual([available.id]);
+    expect(state.recommendedParents.map(({ id }) => id)).toEqual([available.id, completed.id]);
+    expect(state.parentOptions.map(({ id }) => id)).toEqual([available.id, completed.id]);
   });
 
   it("keeps Parent tied to Current even when Focus points elsewhere", () => {

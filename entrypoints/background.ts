@@ -17,7 +17,6 @@ import {
   emptyFloatingPanelState,
 } from "../graph/floatingPanelState";
 import { getCurrentPath } from "../graph/questionTree";
-import { canBeParentNode } from "../graph/parentEligibility";
 import { initializeSidebarBehavior, openDiscussionDetail } from "../platform/sidebar";
 import { selectExistingConversationTab } from "../platform/conversationNavigation";
 import { getAISettings } from "../settings/storage";
@@ -187,9 +186,7 @@ async function captureQuestion(
   try {
     const nodes = await service.nodes.listForProject(project.id);
     const focus = nodes.find((node) => node.id === project.focusNodeId);
-    const currentPath = focus
-      ? getCurrentPath(nodes, focus.id).filter(canBeParentNode)
-      : [];
+    const currentPath = focus ? getCurrentPath(nodes, focus.id) : [];
     const recommendation = await recommendParent({
       question: candidate.question,
       fallbackSummary: candidate.summary,
@@ -198,7 +195,6 @@ async function captureQuestion(
         : {}),
       currentPath: currentPath.map(({ id, question, summary }) => ({ id, question, summary })),
       candidateNodes: nodes
-        .filter(canBeParentNode)
         .slice(-30)
         .map(({ id, question, summary, status }) => ({ id, question, summary, status })),
     });
@@ -216,9 +212,7 @@ async function captureQuestion(
       };
     }
     const latestNodes = await service.nodes.listForProject(project.id);
-    const eligibleNodeIds = new Set(
-      latestNodes.filter(canBeParentNode).map((node) => node.id),
-    );
+    const eligibleNodeIds = new Set(latestNodes.map((node) => node.id));
     recommendation.candidates = recommendation.candidates.filter((item) =>
       eligibleNodeIds.has(item.nodeId)
     );
@@ -352,7 +346,7 @@ async function navigateToQuestion(
       status: "message_not_found",
       error: source.kind === "node"
         ? "问题节点不存在或已被删除。"
-        : "待整理问题不存在或已被处理。",
+        : "待讨论问题不存在或已被处理。",
     };
   }
   return navigateLocatableQuestion(question, options, senderTabId);

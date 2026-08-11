@@ -177,19 +177,16 @@ export class DiscussionMapDatabase extends Dexie {
         type StoredLegacyNode = Omit<QuestionNode, "status"> & { status: string };
         const table = transaction.table("nodes");
         const nodes = await table.toArray() as StoredLegacyNode[];
-        const parentIds = new Set(
-          nodes.flatMap((node) => node.parentId ? [node.parentId] : []),
-        );
         await table.bulkPut(nodes.map((node) => ({
           ...node,
-          status: normalizeLegacyNodeStatus(node.status, parentIds.has(node.id)),
+          status: normalizeLegacyNodeStatus(node.status),
         })));
       });
   }
 }
 
-function normalizeLegacyNodeStatus(status: unknown, hasChildren = false): QuestionNode["status"] {
-  if (hasChildren || status === "resolved" || status === "rejected") return "resolved";
+function normalizeLegacyNodeStatus(status: unknown): QuestionNode["status"] {
+  if (status === "resolved" || status === "rejected") return "resolved";
   return "pending";
 }
 

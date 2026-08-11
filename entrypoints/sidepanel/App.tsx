@@ -3,7 +3,6 @@ import { useLiveQuery } from "dexie-react-hooks";
 import {
   ArrowLeft,
   CornerUpLeft,
-  Crosshair,
   GitBranch,
   Inbox,
   Map,
@@ -12,8 +11,8 @@ import {
   X,
 } from "lucide-react";
 import { browser } from "wxt/browser";
-import { Breadcrumb } from "../../components/Breadcrumb";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { CurrentParentPanel } from "../../components/CurrentParentPanel";
 import { EmptyState } from "../../components/EmptyState";
 import { InboxPanel } from "../../components/InboxPanel";
 import { OpenConversationDialog } from "../../components/OpenConversationDialog";
@@ -123,10 +122,9 @@ export default function App() {
     () => focusNode ? getCurrentPath(nodes, focusNode.id) : [],
     [focusNode, nodes],
   );
-  const openBranches = useMemo(
-    () => focusNode ? getOpenBranches(nodes, focusNode.id) : [],
-    [focusNode, nodes],
-  );
+  const parentNode = focusNode?.parentId
+    ? nodes.find((node) => node.id === focusNode.parentId)
+    : undefined;
   const detailNode = nodes.find((node) => node.id === detailNodeId);
   const linkedNode = nodes.find((node) => node.id === latestAutoLink?.nodeId);
   const linkedParent = nodes.find((node) => node.id === latestAutoLink?.afterParentId);
@@ -263,7 +261,7 @@ export default function App() {
   function requestProjectDelete(project: Project): void {
     setConfirm({
       title: "删除整个项目？",
-      body: `“${project.title}”下的问题图与 Inbox 会从本机删除。此操作不可撤销。`,
+      body: `“${project.title}”下的问题图与待讨论问题会从本机删除。此操作不可撤销。`,
       onConfirm: async () => {
         if (await execute(() => service.deleteProject(project.id))) {
           setConfirm(null);
@@ -333,7 +331,7 @@ export default function App() {
               <GitBranch size={14} /> 当前路径
             </button>
             <button className={view === "inbox" ? "is-active" : ""} type="button" onClick={() => setView("inbox")}>
-              <Inbox size={14} /> 待整理 {candidates.length ? `(${candidates.length})` : ""}
+              <Inbox size={14} /> 待讨论 {candidates.length ? `(${candidates.length})` : ""}
             </button>
             <button className={view === "graph" ? "is-active" : ""} type="button" onClick={() => setView("graph")}>
               <Map size={14} /> 图谱
@@ -347,32 +345,13 @@ export default function App() {
             <div className="focus-view">
               {focusNode ? (
                 <>
-                  <section className="workspace-panel">
-                    <div className="section-label">当前路径</div>
-                    <Breadcrumb path={path} onSelect={(node) => void execute(() => service.focusNode(node.id))} />
-                  </section>
-
-                  <section className="focus-node-card">
-                    <div className="focus-node-card__topline">
-                      <StatusPill status={focusNode.status} />
-                      <button className="text-button" type="button" onClick={() => setDetailNodeId(focusNode.id)}>编辑节点</button>
-                    </div>
-                    <h2>{focusNode.question}</h2>
-                    <p>{focusNode.summary}</p>
-                    <div className="focus-node-card__actions">
-                      <button className="button" type="button" onClick={() => void locateNode(focusNode)}>
-                        <Crosshair size={14} /> 原始消息
-                      </button>
-                      <select
-                        aria-label="修改问题状态"
-                        value={focusNode.status}
-                        onChange={(event) => void execute(() => service.setStatus(focusNode.id, event.target.value as NodeStatus))}
-                      >
-                        <option value="pending">待讨论</option>
-                        <option value="resolved">已完结</option>
-                      </select>
-                    </div>
-                  </section>
+                  <CurrentParentPanel
+                    current={focusNode}
+                    {...(parentNode ? { parent: parentNode } : {})}
+                    onEdit={() => setDetailNodeId(focusNode.id)}
+                    onLocate={() => void locateNode(focusNode)}
+                    onSetStatus={(status) => void execute(() => service.setStatus(focusNode.id, status))}
+                  />
 
                   <div className="quick-nav">
                     <button
@@ -396,24 +375,6 @@ export default function App() {
                     </button>
                   </div>
 
-                  <section className="workspace-panel">
-                    <div className="section-heading">
-                      <div><div className="section-label">待讨论分支</div><h2>仍待讨论</h2></div>
-                      <span>{openBranches.length}</span>
-                    </div>
-                    {openBranches.length ? (
-                      <div className="open-branches">
-                        {openBranches.map((node) => (
-                          <button key={node.id} type="button" onClick={() => void execute(() => service.focusNode(node.id))}>
-                            <span className={`branch-dot branch-dot--${node.status}`} />
-                            <span>{node.question}</span>
-                            <StatusPill status={node.status} />
-                          </button>
-                        ))}
-                      </div>
-                    ) : <p className="muted-empty">当前路径附近没有待讨论的分支。</p>}
-                  </section>
-
                   {latestAutoLink && linkedNode?.parentId === latestAutoLink.afterParentId && linkedParent ? (
                     <section className="linked-toast">
                       <span>已将“{linkedNode.question}”连接到“{linkedParent.question}”</span>
@@ -427,7 +388,7 @@ export default function App() {
               ) : (
                 <section className="empty-state empty-state--compact">
                   <h2>等待第一个问题</h2>
-                  <p>在 ChatGPT 输入框发送问题后，它会被自动捕获；AI 未配置时会安全进入 Inbox。</p>
+                  <p>在 ChatGPT 输入框发送问题后，它会被自动捕获；AI 未配置时会进入待讨论。</p>
                 </section>
               )}
             </div>

@@ -18,8 +18,8 @@ export function InboxPanel({ candidates, nodes, mediumConfidence, onPromote, onD
     return (
       <section className="empty-state empty-state--compact">
         <span className="empty-state__icon" aria-hidden="true"><Inbox size={22} /></span>
-        <h2>待整理已清空</h2>
-        <p>低置信度问题和 AI 处理失败的问题会在这里等待整理。</p>
+        <h2>待讨论已清空</h2>
+        <p>低置信度问题和 AI 处理失败的问题会在这里等待确认父节点。</p>
       </section>
     );
   }
@@ -27,7 +27,7 @@ export function InboxPanel({ candidates, nodes, mediumConfidence, onPromote, onD
   return (
     <section className="inbox-panel">
       <div className="section-heading">
-        <div><div className="section-label">待整理</div><h2>等待确认的问题</h2></div>
+        <div><div className="section-label">待讨论</div><h2>等待确认的问题</h2></div>
         <span>{candidates.length}</span>
       </div>
       <div className="candidate-list">

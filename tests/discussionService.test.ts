@@ -126,7 +126,7 @@ describe("DiscussionService v0.5", () => {
     expect((await service.nodes.get(second.id))?.messageLocator).toEqual(locator);
   });
 
-  it("marks a parent completed when a new pending child is added", async () => {
+  it("keeps parent and child pending when a new child is added", async () => {
     const project = await service.createProject("Project", "Goal");
     const rootCandidate = await service.createCandidate(project.id, capture("怎么做 Chat Graph？", 1));
     const root = await service.promoteCandidate(rootCandidate.id, null, "user");
@@ -138,7 +138,7 @@ describe("DiscussionService v0.5", () => {
     const nodes = await service.nodes.listForProject(project.id);
 
     expect(child.parentId).toBe(root.id);
-    expect(nodes.find((node) => node.id === root.id)?.status).toBe("resolved");
+    expect(nodes.find((node) => node.id === root.id)?.status).toBe("pending");
     expect(nodes.find((node) => node.id === child.id)?.status).toBe("pending");
     expect((await service.projects.get(project.id))?.focusNodeId).toBe(child.id);
   });
@@ -157,7 +157,7 @@ describe("DiscussionService v0.5", () => {
     expect(nodes.filter((node) => node.parentId === null)).toHaveLength(2);
   });
 
-  it("imports a linear history with completed parents and a pending leaf", async () => {
+  it("imports a linear history with every new node pending", async () => {
     const project = await service.createProject("Project", "Goal");
     const result = await service.importLinearQuestions(project.id, [
       capture("First", 1),
@@ -170,8 +170,8 @@ describe("DiscussionService v0.5", () => {
     const latest = nodes.find((node) => node.question === "Latest")!;
 
     expect(result).toMatchObject({ createdCount: 3, skippedCount: 0 });
-    expect(first).toMatchObject({ parentId: null, status: "resolved" });
-    expect(second).toMatchObject({ parentId: first.id, status: "resolved" });
+    expect(first).toMatchObject({ parentId: null, status: "pending" });
+    expect(second).toMatchObject({ parentId: first.id, status: "pending" });
     expect(latest).toMatchObject({ parentId: second.id, status: "pending" });
     expect((await service.projects.get(project.id))?.focusNodeId).toBe(latest.id);
   });
@@ -196,7 +196,7 @@ describe("DiscussionService v0.5", () => {
 
     expect(result).toMatchObject({ createdCount: 2, skippedCount: 1, activeNodeId: latestNew.id });
     expect(firstNew.parentId).toBeNull();
-    expect(firstNew.status).toBe("resolved");
+    expect(firstNew.status).toBe("pending");
     expect(latestNew.parentId).toBe(firstNew.id);
     expect(latestNew.status).toBe("pending");
     expect((await service.nodes.get(existing.id))?.parentId).toBeNull();
@@ -292,7 +292,6 @@ describe("DiscussionService v0.5", () => {
     const project = await service.createProject("Project", "Goal");
     const root = await service.createNode({ projectId: project.id, ...capture("Root", 1) });
     const wrong = await service.createNode({ projectId: project.id, ...capture("Wrong", 2), parentId: root.id });
-    await service.setStatus(root.id, "pending");
     const sibling = await service.createNode({ projectId: project.id, ...capture("Sibling", 3), parentId: root.id });
     const child = await service.createNode({ projectId: project.id, ...capture("Child", 4), parentId: wrong.id });
 
@@ -303,6 +302,9 @@ describe("DiscussionService v0.5", () => {
       "Sibling",
       "Child",
     ]);
+    expect(nodes.find((node) => node.id === root.id)?.status).toBe("pending");
+    expect(nodes.find((node) => node.id === wrong.id)?.status).toBe("pending");
+    expect(nodes.find((node) => node.id === sibling.id)?.status).toBe("pending");
   });
 
   it("rejects self-parenting and cycles", async () => {
@@ -313,7 +315,7 @@ describe("DiscussionService v0.5", () => {
     await expect(service.changeParent(root.id, child.id)).rejects.toThrow("cycle");
   });
 
-  it("rejects completed nodes as new parents while retaining their graph relations", async () => {
+  it("allows completed nodes to receive new children and parent changes", async () => {
     const project = await service.createProject("Project", "Goal");
     const completed = await service.createNode({
       projectId: project.id,
@@ -331,14 +333,16 @@ describe("DiscussionService v0.5", () => {
     await service.setStatus(completed.id, "resolved");
 
     expect((await service.nodes.get(child.id))?.parentId).toBe(completed.id);
-    await expect(service.createNode({
+    const newChild = await service.createNode({
       projectId: project.id,
       ...capture("New child", 4),
       parentId: completed.id,
-    })).rejects.toThrow("completed question");
-    await expect(service.changeParent(unrelated.id, completed.id)).rejects.toThrow(
-      "completed question",
-    );
+    });
+    const moved = await service.changeParent(unrelated.id, completed.id);
+
+    expect(newChild.parentId).toBe(completed.id);
+    expect(moved.parentId).toBe(completed.id);
+    expect((await service.nodes.get(completed.id))?.status).toBe("resolved");
   });
 
   it("changes focus for Parent/Main Thread navigation without changing relations or status", async () => {
@@ -384,6 +388,7 @@ describe("DiscussionService v0.5", () => {
     const child = await service.createNode({ projectId: project.id, ...capture("Child", 3), parentId: parent.id });
     await service.deleteNode(parent.id);
     expect((await service.nodes.get(child.id))?.parentId).toBe(root.id);
+    expect((await service.nodes.get(root.id))?.status).toBe("pending");
   });
 
   it("deletes a node together with all of its descendants", async () => {
@@ -469,7 +474,7 @@ describe("DiscussionService v0.5", () => {
       ...capture("Shared question", 1),
     });
 
-    expect(await migrated.nodes.get("node-old")).toMatchObject({ status: "resolved" });
+    expect(await migrated.nodes.get("node-old")).toMatchObject({ status: "pending" });
     expect(await migrated.nodes.get("node-child")).toMatchObject({ status: "pending" });
     expect(duplicateAcrossProjects.projectId).toBe(secondProject.id);
     expect(await migrated.nodes.count()).toBe(3);

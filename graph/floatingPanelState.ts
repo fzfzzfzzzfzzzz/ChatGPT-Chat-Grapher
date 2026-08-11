@@ -7,7 +7,6 @@ import type {
   QuestionCandidate,
   QuestionNode,
 } from "../types/domain";
-import { canBeParentNode } from "./parentEligibility";
 import { isDescendant } from "./questionTree";
 
 type BuildFloatingPanelStateInput = {
@@ -92,7 +91,7 @@ export function buildFloatingPanelState({
   }
 
   if (candidateIsCurrent && currentCandidate) {
-    const eligibleNodes = nodes.filter(canBeParentNode);
+    const eligibleNodes = nodes;
     const previousNode = latest(
       eligibleNodes.filter(
         (node) => node.chatId === chatId && node.createdAt <= currentCandidate.createdAt,
@@ -154,7 +153,7 @@ export function buildFloatingPanelState({
       parentState,
       recommendedParents,
       rootConfidence: currentCandidate.noParentConfidence,
-      parentOptions: nodeOptions(nodes.filter(canBeParentNode)),
+      parentOptions: nodeOptions(nodes),
     };
   }
 
@@ -180,7 +179,6 @@ function nodeCurrentState(nodes: QuestionNode[], currentNode: QuestionNode) {
   const validParents = nodes.filter(
     (candidate) =>
       candidate.id !== currentNode.id &&
-      canBeParentNode(candidate) &&
       !isDescendant(nodes, candidate.id, currentNode.id),
   );
   return {
