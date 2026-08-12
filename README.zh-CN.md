@@ -6,9 +6,25 @@ Chat Graph 是运行在 ChatGPT 网页上的 Chrome / Firefox 扩展。它不保
 
 当前代码对应 **v0.12.0 - 本地 JSON 数据备份**。
 
-## 浮窗效果
+## 产品预览
+
+<p align="center">
+  <img src="release-assets/v0.12.0/icons/chat-graph-icon-128.png" width="96" alt="Chat Graph 图标">
+</p>
+
+### ChatGPT 页面内浮窗
 
 ![Chat Graph 在 ChatGPT 页面内的浮窗图视角](release-assets/v0.12.0/screenshots/04-floating-panel-in-chatgpt.png)
+
+### Current / Parent 与问题图谱
+
+| Current / Parent 工作区 | Question Graph |
+| --- | --- |
+| ![Current 与 Parent 工作区](release-assets/v0.12.0/screenshots/01-current-parent.png) | ![问题图谱](release-assets/v0.12.0/screenshots/02-question-graph.png) |
+
+### 本地 JSON 数据备份
+
+![本地 JSON 数据备份设置](release-assets/v0.12.0/screenshots/03-local-backup-settings.png)
 
 ## 当前能力
 

@@ -9,9 +9,25 @@ Chat Graph is a local-first Chrome and Firefox extension that turns the question
 
 The current release is **v0.12.0 - Local JSON Backup**.
 
-## Floating panel preview
+## Product preview
+
+<p align="center">
+  <img src="release-assets/v0.12.0/icons/chat-graph-icon-128.png" width="96" alt="Chat Graph icon">
+</p>
+
+### Floating panel inside ChatGPT
 
 ![Chat Graph floating graph view inside ChatGPT](release-assets/v0.12.0/screenshots/04-floating-panel-in-chatgpt.png)
+
+### Current / Parent and Question Graph
+
+| Current / Parent workspace | Question Graph |
+| --- | --- |
+| ![Current and Parent workspace](release-assets/v0.12.0/screenshots/01-current-parent.png) | ![Question Graph](release-assets/v0.12.0/screenshots/02-question-graph.png) |
+
+### Local JSON backup
+
+![Local JSON backup settings](release-assets/v0.12.0/screenshots/03-local-backup-settings.png)
 
 ## What it does
 
