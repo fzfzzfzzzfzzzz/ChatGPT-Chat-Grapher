@@ -14,11 +14,15 @@ describe("DataBackupSection", () => {
       projectCount: 2,
       nodeCount: 7,
       candidateCount: 1,
+      reviewDocumentCount: 1,
+      reviewVersionCount: 2,
     });
     const onImport = vi.fn().mockResolvedValue({
       projectCount: 1,
       nodeCount: 3,
       candidateCount: 0,
+      reviewDocumentCount: 1,
+      reviewVersionCount: 1,
       eventCount: 0,
       importedProjectIds: ["project-imported"],
     });
@@ -26,12 +30,12 @@ describe("DataBackupSection", () => {
 
     await user.click(screen.getByRole("button", { name: "导出 JSON" }));
     expect(onExport).toHaveBeenCalledOnce();
-    expect(await screen.findByText("已导出 2 个项目、7 个问题节点。")).toBeTruthy();
+    expect(await screen.findByText("已导出 2 个项目、7 个问题节点、1 份总结（2 个版本）。")).toBeTruthy();
 
     const file = new File(["{}"], "chat-graph-backup.json", { type: "application/json" });
     await user.upload(screen.getByLabelText("选择 Chat Graph JSON 备份"), file);
     expect(onImport).toHaveBeenCalledWith(file);
-    expect(await screen.findByText("已导入 1 个项目、3 个问题节点。")).toBeTruthy();
+    expect(await screen.findByText("已导入 1 个项目、3 个问题节点、1 份总结（1 个版本）。")).toBeTruthy();
   });
 
   it("keeps import errors inside the settings dialog", async () => {

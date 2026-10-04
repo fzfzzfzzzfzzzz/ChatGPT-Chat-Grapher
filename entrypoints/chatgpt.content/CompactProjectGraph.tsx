@@ -10,19 +10,27 @@ import {
 import { layoutCompactGraph } from "../../graph/compactGraphLayout";
 import { getGraphNodeActivation } from "../../graph/graphNodeActivation";
 import { NODE_STATUS_LABELS, NODE_STATUS_OPTIONS } from "../../shared/nodeStatus";
-import type { FloatingPanelGraphNode } from "../../shared/messages";
+import type {
+  FloatingPanelGraphNode,
+  FloatingPanelReviewArtifact,
+} from "../../shared/messages";
 import type { NodeStatus } from "../../types/domain";
 
 type Props = {
   nodes: FloatingPanelGraphNode[];
+  reviewArtifacts?: FloatingPanelReviewArtifact[];
   currentNodeId?: string;
   focusedNodeId?: string;
   selectedNodeId?: string;
   onSelectNode: (nodeId: string) => void;
   onViewNodeDetails: (nodeId: string) => void;
+  onChangeNodeParent: (nodeId: string) => void;
   onSetNodeStatus: (nodeId: string, status: NodeStatus) => Promise<boolean>;
   onDeleteNode: (nodeId: string, deleteDescendants?: boolean) => Promise<boolean>;
   onRequestLocateNode: (nodeId: string) => void;
+  onSummarizeNode?: (nodeId: string) => void;
+  onOpenReviewArtifact?: (artifact: FloatingPanelReviewArtifact) => void;
+  onDeleteReviewArtifact?: (documentId: string) => Promise<boolean>;
   onOpenFullGraph: () => void;
 };
 
@@ -39,6 +47,12 @@ type ContextMenuState = {
   y: number;
 };
 
+type PositionedReviewArtifact = FloatingPanelReviewArtifact & {
+  x: number;
+  y: number;
+  attached: boolean;
+};
+
 type GraphViewport = {
   zoom: number;
   x: number;
@@ -52,14 +66,19 @@ const ZOOM_STEP = 1.25;
 
 export function CompactProjectGraph({
   nodes,
+  reviewArtifacts = [],
   currentNodeId,
   focusedNodeId,
   selectedNodeId,
   onSelectNode,
   onViewNodeDetails,
+  onChangeNodeParent,
   onSetNodeStatus,
   onDeleteNode,
   onRequestLocateNode,
+  onSummarizeNode,
+  onOpenReviewArtifact,
+  onDeleteReviewArtifact,
   onOpenFullGraph,
 }: Props) {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -73,17 +92,22 @@ export function CompactProjectGraph({
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const [updatingNodeId, setUpdatingNodeId] = useState<string>();
   const [deletingNodeId, setDeletingNodeId] = useState<string>();
+  const [deletingReviewId, setDeletingReviewId] = useState<string>();
   const [confirmingDelete, setConfirmingDelete] = useState<{
     nodeId: string;
     deleteDescendants: boolean;
   }>();
+  const [confirmingReviewDeleteId, setConfirmingReviewDeleteId] = useState<string>();
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [viewport, setViewport] = useState<GraphViewport>(DEFAULT_VIEWPORT);
   const [panning, setPanning] = useState(false);
   const layout = useMemo(() => layoutCompactGraph(nodes), [nodes]);
   const graphStructureKey = useMemo(
-    () => nodes.map((node) => `${node.id}:${node.parentId ?? ""}`).join("|"),
-    [nodes],
+    () => [
+      nodes.map((node) => `${node.id}:${node.parentId ?? ""}`).join("|"),
+      reviewArtifacts.map((artifact) => `${artifact.id}:${artifact.anchorNodeId}`).join("|"),
+    ].join("#"),
+    [nodes, reviewArtifacts],
   );
   const positionedById = useMemo(
     () => new Map(layout.nodes.map((node) => [node.id, node])),
@@ -93,11 +117,35 @@ export function CompactProjectGraph({
     () => getAncestorPath(nodes, currentNodeId),
     [currentNodeId, nodes],
   );
+  const positionedReviewArtifacts = useMemo(
+    () => positionReviewArtifacts(reviewArtifacts, positionedById, layout.width),
+    [layout.width, positionedById, reviewArtifacts],
+  );
+  const reviewArtifactById = useMemo(
+    () => new Map(positionedReviewArtifacts.map((artifact) => [artifact.id, artifact])),
+    [positionedReviewArtifacts],
+  );
+  const graphDimensions = useMemo(() => ({
+    width: Math.max(
+      layout.width,
+      ...positionedReviewArtifacts.map((artifact) => artifact.x + 30),
+    ),
+    height: Math.max(
+      layout.height,
+      ...positionedReviewArtifacts.map((artifact) => artifact.y + 30),
+    ),
+  }), [layout.height, layout.width, positionedReviewArtifacts]);
   const tooltipNode = tooltip
     ? positionedById.get(tooltip.nodeId)
     : undefined;
+  const tooltipReviewArtifact = tooltip
+    ? reviewArtifactById.get(tooltip.nodeId)
+    : undefined;
   const contextNode = contextMenu
     ? positionedById.get(contextMenu.nodeId)
+    : undefined;
+  const contextReviewArtifact = contextMenu
+    ? reviewArtifactById.get(contextMenu.nodeId)
     : undefined;
 
   useEffect(() => {
@@ -111,6 +159,7 @@ export function CompactProjectGraph({
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmingDelete) setConfirmingDelete(undefined);
+      else if (confirmingReviewDeleteId) setConfirmingReviewDeleteId(undefined);
       else if (statusMenuOpen) setStatusMenuOpen(false);
       else setContextMenu(undefined);
     };
@@ -120,13 +169,17 @@ export function CompactProjectGraph({
       window.removeEventListener("pointerdown", dismiss);
       window.removeEventListener("keydown", dismissOnEscape);
     };
-  }, [confirmingDelete, contextMenu, statusMenuOpen]);
+  }, [confirmingDelete, confirmingReviewDeleteId, contextMenu, statusMenuOpen]);
 
   useEffect(() => {
-    if (contextMenu && !positionedById.has(contextMenu.nodeId)) {
+    if (
+      contextMenu
+      && !positionedById.has(contextMenu.nodeId)
+      && !reviewArtifactById.has(contextMenu.nodeId)
+    ) {
       setContextMenu(undefined);
     }
-  }, [contextMenu, positionedById]);
+  }, [contextMenu, positionedById, reviewArtifactById]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -151,6 +204,7 @@ export function CompactProjectGraph({
   }, [
     confirmingDelete?.deleteDescendants,
     confirmingDelete?.nodeId,
+    confirmingReviewDeleteId,
     contextMenu?.nodeId,
     contextMenu?.x,
     contextMenu?.y,
@@ -176,16 +230,19 @@ export function CompactProjectGraph({
     };
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleWheel);
-  }, [layout.height, layout.width]);
+  }, [graphDimensions.height, graphDimensions.width]);
 
   function graphPointInCanvas(x: number, y: number) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const baseScale = Math.min(rect.width / layout.width, rect.height / layout.height);
+    const baseScale = Math.min(
+      rect.width / graphDimensions.width,
+      rect.height / graphDimensions.height,
+    );
     if (!Number.isFinite(baseScale) || baseScale <= 0) return;
-    const offsetX = (rect.width - layout.width * baseScale) / 2;
-    const offsetY = (rect.height - layout.height * baseScale) / 2;
+    const offsetX = (rect.width - graphDimensions.width * baseScale) / 2;
+    const offsetY = (rect.height - graphDimensions.height * baseScale) / 2;
     return {
       x: offsetX + (viewport.x + x * viewport.zoom) * baseScale,
       y: offsetY + (viewport.y + y * viewport.zoom) * baseScale,
@@ -194,7 +251,7 @@ export function CompactProjectGraph({
 
   function revealNode(nodeId: string) {
     const canvas = canvasRef.current;
-    const node = positionedById.get(nodeId);
+    const node = positionedById.get(nodeId) ?? reviewArtifactById.get(nodeId);
     if (!canvas || !node) return;
     const rect = canvas.getBoundingClientRect();
     const point = graphPointInCanvas(node.x, node.y);
@@ -212,7 +269,7 @@ export function CompactProjectGraph({
     clientPosition?: { x: number; y: number },
   ) {
     const canvas = canvasRef.current;
-    const node = positionedById.get(nodeId);
+    const node = positionedById.get(nodeId) ?? reviewArtifactById.get(nodeId);
     if (!canvas || !node) return;
     const rect = canvas.getBoundingClientRect();
     const point = clientPosition ? undefined : graphPointInCanvas(node.x, node.y);
@@ -227,6 +284,7 @@ export function CompactProjectGraph({
     });
     setStatusMenuOpen(false);
     setConfirmingDelete(undefined);
+    setConfirmingReviewDeleteId(undefined);
   }
 
   function zoomGraph(multiplier: number, clientPosition?: { x: number; y: number }) {
@@ -237,8 +295,8 @@ export function CompactProjectGraph({
       const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, current.zoom * multiplier));
       if (nextZoom === current.zoom) return current;
       if (!canvas || !clientPosition) {
-        const centerX = layout.width / 2;
-        const centerY = layout.height / 2;
+        const centerX = graphDimensions.width / 2;
+        const centerY = graphDimensions.height / 2;
         const graphX = (centerX - current.x) / current.zoom;
         const graphY = (centerY - current.y) / current.zoom;
         return {
@@ -249,10 +307,13 @@ export function CompactProjectGraph({
       }
 
       const rect = canvas.getBoundingClientRect();
-      const baseScale = Math.min(rect.width / layout.width, rect.height / layout.height);
+      const baseScale = Math.min(
+        rect.width / graphDimensions.width,
+        rect.height / graphDimensions.height,
+      );
       if (!Number.isFinite(baseScale) || baseScale <= 0) return { ...current, zoom: nextZoom };
-      const offsetX = (rect.width - layout.width * baseScale) / 2;
-      const offsetY = (rect.height - layout.height * baseScale) / 2;
+      const offsetX = (rect.width - graphDimensions.width * baseScale) / 2;
+      const offsetY = (rect.height - graphDimensions.height * baseScale) / 2;
       const anchorX = (clientPosition.x - rect.left - offsetX) / baseScale;
       const anchorY = (clientPosition.y - rect.top - offsetY) / baseScale;
       const graphX = (anchorX - current.x) / current.zoom;
@@ -269,7 +330,7 @@ export function CompactProjectGraph({
     if (
       event.button !== 0 ||
       (event.target as Element).closest(
-        ".chat-graph-map-node, .chat-graph-map__controls, .chat-graph-map__context-menu",
+        ".chat-graph-map-node, .chat-graph-review-artifact, .chat-graph-map__controls, .chat-graph-map__context-menu",
       )
     ) return;
     panRef.current = {
@@ -288,7 +349,10 @@ export function CompactProjectGraph({
     const canvas = canvasRef.current;
     if (!pan || !canvas || pan.pointerId !== event.pointerId) return;
     const rect = canvas.getBoundingClientRect();
-    const baseScale = Math.min(rect.width / layout.width, rect.height / layout.height);
+    const baseScale = Math.min(
+      rect.width / graphDimensions.width,
+      rect.height / graphDimensions.height,
+    );
     if (!Number.isFinite(baseScale) || baseScale <= 0) return;
     const deltaX = (event.clientX - pan.clientX) / baseScale;
     const deltaY = (event.clientY - pan.clientY) / baseScale;
@@ -343,6 +407,35 @@ export function CompactProjectGraph({
     setContextMenu(undefined);
   }
 
+  function openReviewArtifact() {
+    if (!contextReviewArtifact || !onOpenReviewArtifact) return;
+    setContextMenu(undefined);
+    setConfirmingReviewDeleteId(undefined);
+    onOpenReviewArtifact(reviewArtifactValue(contextReviewArtifact));
+  }
+
+  async function deleteReviewArtifact() {
+    if (!contextReviewArtifact || !onDeleteReviewArtifact || deletingReviewId) return;
+    setDeletingReviewId(contextReviewArtifact.documentId);
+    try {
+      if (await onDeleteReviewArtifact(contextReviewArtifact.documentId)) {
+        setContextMenu(undefined);
+        setConfirmingReviewDeleteId(undefined);
+      }
+    } finally {
+      setDeletingReviewId(undefined);
+    }
+  }
+
+  function changeNodeParent() {
+    if (!contextNode) return;
+    const nodeId = contextNode.id;
+    setContextMenu(undefined);
+    setStatusMenuOpen(false);
+    setConfirmingDelete(undefined);
+    onChangeNodeParent(nodeId);
+  }
+
   function requestNodeDelete(deleteDescendants = false) {
     if (!contextNode) return;
     setStatusMenuOpen(false);
@@ -368,13 +461,14 @@ export function CompactProjectGraph({
     const activation = getGraphNodeActivation(selectedNodeId, nodeId);
     if (activation === "ignore") return;
     if (activation === "confirm_locate") {
+      if (positionedById.get(nodeId)?.kind === "planned") return;
       onRequestLocateNode(nodeId);
       return;
     }
     onSelectNode(nodeId);
   }
 
-  if (nodes.length === 0) {
+  if (nodes.length === 0 && reviewArtifacts.length === 0) {
     return (
       <section className="chat-graph-map chat-graph-map--empty">
         <div className="chat-graph-map__empty">当前项目还没有问题节点</div>
@@ -394,10 +488,12 @@ export function CompactProjectGraph({
         onPointerCancel={endPan}
       >
         <svg
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
+          viewBox={`0 0 ${graphDimensions.width} ${graphDimensions.height}`}
           preserveAspectRatio="xMidYMid meet"
           role="img"
-          aria-label={`图视角显示项目的全部 ${nodes.length} 个问题节点`}
+          aria-label={reviewArtifacts.length
+            ? `图视角显示项目的全部 ${nodes.length} 个问题节点和 ${reviewArtifacts.length} 个总结节点`
+            : `图视角显示项目的全部 ${nodes.length} 个问题节点`}
         >
           <g
             className="chat-graph-map__viewport"
@@ -417,6 +513,18 @@ export function CompactProjectGraph({
                   />
                 );
               })}
+              {positionedReviewArtifacts.map((artifact) => {
+                const source = positionedById.get(artifact.anchorNodeId);
+                if (!source) return null;
+                return (
+                  <path
+                    key={`review-edge:${artifact.documentId}`}
+                    data-review-edge={artifact.documentId}
+                    d={`M ${source.x} ${source.y} L ${artifact.x} ${artifact.y}`}
+                    style={{ stroke: "#8b5cf6", strokeDasharray: "6 4" }}
+                  />
+                );
+              })}
             </g>
             <g className="chat-graph-map__nodes">
               {layout.nodes.map((node) => {
@@ -426,6 +534,7 @@ export function CompactProjectGraph({
                   node.id === currentNodeId ? "is-current" : "",
                   node.id === focusedNodeId ? "is-focused" : "",
                   node.id === selectedNodeId ? "is-selected" : "",
+                  node.kind === "planned" ? "is-planned" : "",
                 ].filter(Boolean).join(" ");
                 return (
                   <g
@@ -433,7 +542,7 @@ export function CompactProjectGraph({
                     className={classes}
                     transform={`translate(${node.x} ${node.y})`}
                     role="button"
-                    aria-label={node.question}
+                    aria-label={node.kind === "planned" ? `计划问题：${node.question}` : node.question}
                     aria-pressed={node.id === selectedNodeId}
                     tabIndex={0}
                     onPointerEnter={() => revealNode(node.id)}
@@ -456,12 +565,80 @@ export function CompactProjectGraph({
                       }
                     }}
                   >
-                    <circle className="chat-graph-map-node__focus-ring" r={node.id === currentNodeId ? 14 : 12} />
-                    <circle className="chat-graph-map-node__dot" r={node.id === currentNodeId ? 8 : 7} />
+                    {node.kind === "planned" ? (
+                      <>
+                        <rect
+                          className="chat-graph-map-node__focus-ring"
+                          x={node.id === currentNodeId ? -11 : -10}
+                          y={node.id === currentNodeId ? -11 : -10}
+                          width={node.id === currentNodeId ? 22 : 20}
+                          height={node.id === currentNodeId ? 22 : 20}
+                          rx="4"
+                        />
+                        <rect className="chat-graph-map-node__dot" x="-7" y="-7" width="14" height="14" rx="3" />
+                      </>
+                    ) : (
+                      <>
+                        <circle className="chat-graph-map-node__focus-ring" r={node.id === currentNodeId ? 14 : 12} />
+                        <circle className="chat-graph-map-node__dot" r={node.id === currentNodeId ? 8 : 7} />
+                      </>
+                    )}
                     <circle className="chat-graph-map-node__hit-area" r="15" />
                   </g>
                 );
               })}
+            </g>
+            <g className="chat-graph-map__review-artifacts">
+              {positionedReviewArtifacts.map((artifact) => (
+                <g
+                  key={artifact.id}
+                  className="chat-graph-review-artifact"
+                  data-document-id={artifact.documentId}
+                  transform={`translate(${artifact.x} ${artifact.y})`}
+                  role="button"
+                  aria-label={`总结：${artifact.title}${artifact.stale ? "，已有后续消息" : ""}`}
+                  tabIndex={0}
+                  onPointerEnter={() => revealNode(artifact.id)}
+                  onFocus={() => revealNode(artifact.id)}
+                  onBlur={() => setTooltip(undefined)}
+                  onClick={() => {
+                    revealNode(artifact.id);
+                    onOpenReviewArtifact?.(reviewArtifactValue(artifact));
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openContextMenu(artifact.id, { x: event.clientX, y: event.clientY });
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onOpenReviewArtifact?.(reviewArtifactValue(artifact));
+                    }
+                    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                      event.preventDefault();
+                      openContextMenu(artifact.id);
+                    }
+                  }}
+                  style={{ cursor: "pointer", outline: "none" }}
+                >
+                  <rect
+                    x="-10"
+                    y="-12"
+                    width="20"
+                    height="24"
+                    rx="3"
+                    style={{ fill: "#8b5cf6", stroke: "#6d28d9", strokeWidth: 1.5 }}
+                  />
+                  <path
+                    d="M 3 -12 L 10 -5 L 3 -5 Z M -5 1 L 5 1 M -5 5 L 3 5"
+                    style={{ fill: "#c4b5fd", stroke: "#ffffff", strokeWidth: 1.2 }}
+                    aria-hidden="true"
+                  />
+                  <rect x="-15" y="-17" width="30" height="34" fill="transparent" />
+                  {artifact.stale ? <circle cx="10" cy="-12" r="3" fill="#f59e0b" /> : null}
+                </g>
+              ))}
             </g>
           </g>
         </svg>
@@ -496,28 +673,96 @@ export function CompactProjectGraph({
           </button>
         </div>
 
-        {tooltip && tooltipNode ? (
+        {tooltip && (tooltipNode || tooltipReviewArtifact) ? (
           <div
             className={`chat-graph-map__tooltip${tooltip.below ? " is-below" : ""}`}
             role="tooltip"
             style={{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }}
           >
-            {tooltipNode.question}
+            <span>{tooltipReviewArtifact?.title ?? tooltipNode?.question}</span>
+            {tooltipReviewArtifact ? (
+              <small>{tooltipReviewArtifact.stale ? "已有后续消息" : "已保存总结"}</small>
+            ) : tooltipNode?.kind === "planned" ? (
+              <small>计划问题 · 发送后自动绑定原消息</small>
+            ) : tooltipNode?.referenceCounts?.total ? (
+              <small>
+                {[
+                  tooltipNode.referenceCounts.files ? `附件 ${tooltipNode.referenceCounts.files}` : "",
+                  tooltipNode.referenceCounts.images ? `图片 ${tooltipNode.referenceCounts.images}` : "",
+                  tooltipNode.referenceCounts.assistantQuotes
+                    ? `回答引用 ${tooltipNode.referenceCounts.assistantQuotes}`
+                    : "",
+                ].filter(Boolean).join(" · ")}
+              </small>
+            ) : null}
           </div>
         ) : null}
 
-        {contextMenu && contextNode ? (
+        {contextMenu && (contextNode || contextReviewArtifact) ? (
           <div
             ref={menuRef}
             className="chat-graph-map__context-menu"
             role="menu"
-            aria-label={`节点操作：${contextNode.question}`}
+            aria-label={contextReviewArtifact
+              ? `总结操作：${contextReviewArtifact.title}`
+              : `节点操作：${contextNode?.question ?? ""}`}
             style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
           >
-            <div className="chat-graph-map__context-title" title={contextNode.question}>
-              {contextNode.question}
+            <div
+              className="chat-graph-map__context-title"
+              title={contextReviewArtifact?.title ?? contextNode?.question}
+            >
+              {contextReviewArtifact?.title ?? contextNode?.question}
             </div>
-            {confirmingDelete?.nodeId === contextNode.id ? (
+            {contextReviewArtifact ? (
+              confirmingReviewDeleteId === contextReviewArtifact.documentId ? (
+                <div
+                  className="chat-graph-map__delete-confirm"
+                  role="group"
+                  aria-label={`确认删除总结：${contextReviewArtifact.title}`}
+                >
+                  <p>将删除这个本地总结及其全部历史版本，此操作不可撤销。</p>
+                  <div>
+                    <button
+                      type="button"
+                      disabled={deletingReviewId === contextReviewArtifact.documentId}
+                      onClick={() => setConfirmingReviewDeleteId(undefined)}
+                    >
+                      取消
+                    </button>
+                    <button
+                      className="is-danger"
+                      type="button"
+                      autoFocus
+                      disabled={deletingReviewId === contextReviewArtifact.documentId}
+                      onClick={() => void deleteReviewArtifact()}
+                    >
+                      {deletingReviewId === contextReviewArtifact.documentId ? "删除中…" : "确认删除"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    autoFocus
+                    onClick={openReviewArtifact}
+                  >
+                    打开总结
+                  </button>
+                  <button
+                    className="chat-graph-map__context-delete"
+                    type="button"
+                    role="menuitem"
+                    disabled={!onDeleteReviewArtifact}
+                    onClick={() => setConfirmingReviewDeleteId(contextReviewArtifact.documentId)}
+                  >
+                    删除总结
+                  </button>
+                </>
+              )
+            ) : contextNode && confirmingDelete?.nodeId === contextNode.id ? (
               <div
                 className="chat-graph-map__delete-confirm"
                 role="group"
@@ -549,7 +794,7 @@ export function CompactProjectGraph({
                   </button>
                 </div>
               </div>
-            ) : (
+            ) : contextNode ? (
               <>
                 <button
                   type="button"
@@ -558,6 +803,27 @@ export function CompactProjectGraph({
                   onClick={viewNodeDetails}
                 >
                   查看总结与详情
+                </button>
+                {onSummarizeNode ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      const nodeId = contextNode.id;
+                      setContextMenu(undefined);
+                      onSummarizeNode(nodeId);
+                    }}
+                  >
+                    总结此节点
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={updatingNodeId === contextNode.id}
+                  onClick={changeNodeParent}
+                >
+                  更换父节点
                 </button>
                 <button
                   className="chat-graph-map__status-trigger"
@@ -610,12 +876,16 @@ export function CompactProjectGraph({
                   删除节点及其子节点
                 </button>
               </>
-            )}
+            ) : null}
           </div>
         ) : null}
       </div>
       <footer className="chat-graph-map__footer">
-        <span>全部 {nodes.length} 个节点 · 滚轮缩放 / 拖动画布</span>
+        <span>
+          全部 {nodes.length} 个问题节点
+          {reviewArtifacts.length ? ` · ${reviewArtifacts.length} 个总结` : ""}
+          {" · 滚轮缩放 / 拖动画布"}
+        </span>
         <button type="button" onClick={onOpenFullGraph}>在侧栏打开 →</button>
       </footer>
     </section>
@@ -649,4 +919,52 @@ function countDescendants(nodes: FloatingPanelGraphNode[], rootId: string): numb
     }
   }
   return ids.size - 1;
+}
+
+function positionReviewArtifacts(
+  artifacts: readonly FloatingPanelReviewArtifact[],
+  questionPositions: ReadonlyMap<string, { x: number; y: number }>,
+  baseWidth: number,
+): PositionedReviewArtifact[] {
+  const nextOffsetByAnchor = new Map<string, number>();
+  let orphanIndex = 0;
+  return artifacts.map((artifact) => {
+    const anchor = questionPositions.get(artifact.anchorNodeId);
+    if (!anchor) {
+      const positioned = {
+        ...artifact,
+        x: baseWidth + 26,
+        y: 24 + orphanIndex * 34,
+        attached: false,
+      };
+      orphanIndex += 1;
+      return positioned;
+    }
+    const anchorOffset = nextOffsetByAnchor.get(anchorId(artifact)) ?? 0;
+    nextOffsetByAnchor.set(anchorId(artifact), anchorOffset + 1);
+    return {
+      ...artifact,
+      x: anchor.x + 42,
+      y: anchor.y + anchorOffset * 28,
+      attached: true,
+    };
+  });
+}
+
+function anchorId(artifact: FloatingPanelReviewArtifact): string {
+  return artifact.anchorNodeId;
+}
+
+function reviewArtifactValue(
+  artifact: PositionedReviewArtifact,
+): FloatingPanelReviewArtifact {
+  return {
+    id: artifact.id,
+    title: artifact.title,
+    anchorNodeId: artifact.anchorNodeId,
+    documentId: artifact.documentId,
+    versionId: artifact.versionId,
+    savedAt: artifact.savedAt,
+    ...(artifact.stale ? { stale: true } : {}),
+  };
 }

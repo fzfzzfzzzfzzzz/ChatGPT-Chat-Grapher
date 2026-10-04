@@ -32,6 +32,55 @@ export function isDescendant(
   return false;
 }
 
+export function getValidParentNodes(
+  nodes: QuestionNode[],
+  nodeId: string,
+): QuestionNode[] {
+  return getParentSelectionCandidates(nodes, nodeId).nodes;
+}
+
+export type ParentSelectionCandidates = {
+  nodes: QuestionNode[];
+  latestConversationNodeId?: string;
+};
+
+export function getParentSelectionCandidates(
+  nodes: QuestionNode[],
+  nodeId: string,
+): ParentSelectionCandidates {
+  const currentNode = nodes.find((node) => node.id === nodeId);
+  const validNodes = nodes
+    .filter(
+      (candidate) =>
+        candidate.id !== nodeId &&
+        !isDescendant(nodes, candidate.id, nodeId),
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+
+  if (!currentNode) return { nodes: validNodes };
+  const latestConversationNode = validNodes.reduce<QuestionNode | undefined>(
+    (latest, candidate) => {
+      if (
+        candidate.chatId !== currentNode.chatId ||
+        candidate.createdAt >= currentNode.createdAt
+      ) return latest;
+      return !latest || candidate.createdAt > latest.createdAt
+        ? candidate
+        : latest;
+    },
+    undefined,
+  );
+  if (!latestConversationNode) return { nodes: validNodes };
+
+  return {
+    nodes: [
+      latestConversationNode,
+      ...validNodes.filter((candidate) => candidate.id !== latestConversationNode.id),
+    ],
+    latestConversationNodeId: latestConversationNode.id,
+  };
+}
+
 export function getOpenBranches(nodes: QuestionNode[], focusId: string): QuestionNode[] {
   const focus = nodes.find((node) => node.id === focusId);
   if (!focus) return [];

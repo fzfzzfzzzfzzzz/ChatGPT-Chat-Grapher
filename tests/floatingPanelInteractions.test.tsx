@@ -15,6 +15,8 @@ const browserMocks = vi.hoisted(() => ({
 
 const captureMocks = vi.hoisted(() => ({
   getAllCapturedQuestions: vi.fn(),
+  getCapturedQuestionFromElement: vi.fn(),
+  watchForRefinedMessageLocator: vi.fn(),
 }));
 
 vi.mock("wxt/browser", () => ({
@@ -86,6 +88,8 @@ describe("FloatingNavigationPanel interactions", () => {
     browserMocks.storageGet.mockClear();
     browserMocks.storageSet.mockClear();
     captureMocks.getAllCapturedQuestions.mockReset();
+    captureMocks.getCapturedQuestionFromElement.mockReset();
+    captureMocks.watchForRefinedMessageLocator.mockReset();
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
       value: vi.fn(() => ({
@@ -94,6 +98,8 @@ describe("FloatingNavigationPanel interactions", () => {
         removeEventListener: vi.fn(),
       })),
     });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 768 });
     window.history.replaceState({}, "", "/c/chat-1");
   });
 
@@ -208,7 +214,7 @@ describe("FloatingNavigationPanel interactions", () => {
     expect(screen.getByText("Child question")).toBeDefined();
   });
 
-  it("keeps only summary and source location in the parent menu", async () => {
+  it("moves parent editing from the current menu to the parent menu", async () => {
     browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
       if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
       return { ok: true };
@@ -217,11 +223,14 @@ describe("FloatingNavigationPanel interactions", () => {
     render(<FloatingNavigationPanel />);
     expect(await screen.findByText("Child question")).toBeDefined();
     expect(screen.queryByText("Root summary")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "当前节点操作" }));
+    expect(screen.queryByRole("menuitem", { name: "更换父节点" })).toBeNull();
+    await userEvent.keyboard("{Escape}");
     await userEvent.click(screen.getByRole("button", { name: "父节点操作" }));
     expect(screen.getByRole("menuitem", { name: "查看摘要" })).toBeDefined();
     expect(screen.getByRole("menuitem", { name: "定位原文" })).toBeDefined();
+    expect(screen.getByRole("menuitem", { name: "更换当前父节点" })).toBeDefined();
     expect(screen.queryByRole("menuitem", { name: "查看父节点" })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "更换父节点" })).toBeNull();
     await userEvent.click(screen.getByRole("menuitem", { name: "查看摘要" }));
 
     expect(await screen.findByText("Root summary")).toBeDefined();
@@ -379,6 +388,184 @@ describe("FloatingNavigationPanel interactions", () => {
       .not.toBe("translate(0 0) scale(1)");
   });
 
+  it("deletes a saved review artifact through the review document route", async () => {
+    const reviewState: FloatingPanelState = {
+      ...baseState,
+      reviewArtifacts: [{
+        id: "review-artifact:review-1",
+        title: "Saved branch review",
+        anchorNodeId: "root",
+        documentId: "review-1",
+        versionId: "version-1",
+        savedAt: 10,
+      }],
+    };
+    let deleted = false;
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "DELETE_REVIEW_DOCUMENT") {
+        deleted = true;
+        return { ok: true };
+      }
+      if (message.type === "GET_FLOATING_PANEL_STATE") {
+        return deleted ? { ...reviewState, reviewArtifacts: [] } : reviewState;
+      }
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    await userEvent.click(screen.getByRole("button", { name: "图视角" }));
+    const artifact = screen.getByRole("button", { name: "总结：Saved branch review" });
+    fireEvent.contextMenu(artifact, { clientX: 80, clientY: 60 });
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除总结" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(browserMocks.sendMessage).toHaveBeenCalledWith({
+      type: "DELETE_REVIEW_DOCUMENT",
+      documentId: "review-1",
+    }));
+    await waitFor(() => expect(
+      screen.queryByRole("button", { name: "总结：Saved branch review" }),
+    ).toBeNull());
+  });
+
+  it("restores and persists a user-defined floating panel size", async () => {
+    browserMocks.storageGet.mockResolvedValueOnce({
+      floatingPanelPreferencesV06: {
+        schemaVersion: 2,
+        mode: "working",
+        view: "current",
+        x: 120,
+        y: 90,
+        width: 480,
+        height: 500,
+      },
+    });
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+
+    const panel = document.querySelector<HTMLElement>(".chat-graph-panel--working")!;
+    expect(panel.classList.contains("chat-graph-panel--user-sized")).toBe(true);
+    expect(panel.style.left).toBe("120px");
+    expect(panel.style.top).toBe("90px");
+    expect(panel.style.width).toBe("480px");
+    expect(panel.style.height).toBe("500px");
+
+    await waitFor(() => expect(browserMocks.storageSet).toHaveBeenCalledWith({
+      floatingPanelPreferencesV06: {
+        schemaVersion: 2,
+        mode: "working",
+        view: "current",
+        x: 120,
+        y: 90,
+        width: 480,
+        height: 500,
+      },
+    }));
+  });
+
+  it("resizes from the lower-right handle within minimum, maximum, and viewport bounds", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    const panel = document.querySelector<HTMLElement>(".chat-graph-panel--working")!;
+    vi.spyOn(panel, "getBoundingClientRect").mockReturnValue({
+      x: 500,
+      y: 80,
+      left: 500,
+      top: 80,
+      right: 856,
+      bottom: 500,
+      width: 356,
+      height: 420,
+      toJSON: () => ({}),
+    });
+    const handle = screen.getByRole("button", { name: "调整 Chat Graph 浮窗大小" });
+
+    fireEvent.pointerDown(handle, {
+      button: 0,
+      pointerId: 17,
+      clientX: 856,
+      clientY: 500,
+    });
+    fireEvent.pointerMove(window, {
+      pointerId: 17,
+      clientX: 300,
+      clientY: 100,
+    });
+    expect(panel.style.left).toBe("500px");
+    expect(panel.style.top).toBe("80px");
+    expect(panel.style.width).toBe("280px");
+    expect(panel.style.height).toBe("220px");
+
+    fireEvent.pointerMove(window, {
+      pointerId: 17,
+      clientX: 1400,
+      clientY: 1100,
+    });
+    expect(panel.style.left).toBe("500px");
+    expect(panel.style.top).toBe("80px");
+    expect(panel.style.width).toBe("520px");
+    expect(panel.style.height).toBe("630px");
+    fireEvent.pointerUp(window, { pointerId: 17 });
+
+    await userEvent.click(screen.getByRole("button", { name: "收起 Chat Graph 浮窗" }));
+    const collapsed = document.querySelector<HTMLElement>(".chat-graph-panel--collapsed")!;
+    expect(collapsed.style.width).toBe("");
+    expect(collapsed.style.height).toBe("");
+    await userEvent.click(screen.getByRole("button", { name: "展开 Chat Graph 工作面板" }));
+    const expanded = document.querySelector<HTMLElement>(".chat-graph-panel--working")!;
+    expect(expanded.style.width).toBe("520px");
+    expect(expanded.style.height).toBe("630px");
+  });
+
+  it("clamps a saved floating panel size and position when the viewport shrinks", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+    browserMocks.storageGet.mockResolvedValueOnce({
+      floatingPanelPreferencesV06: {
+        schemaVersion: 2,
+        mode: "working",
+        x: 600,
+        y: 300,
+        width: 500,
+        height: 500,
+      },
+    });
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    const panel = document.querySelector<HTMLElement>(".chat-graph-panel--working")!;
+    await waitFor(() => expect(panel.style.width).toBe("500px"));
+
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 430 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+    fireEvent(window, new Event("resize"));
+
+    await waitFor(() => {
+      expect(panel.style.width).toBe("406px");
+      expect(panel.style.height).toBe("280px");
+      expect(panel.style.left).toBe("12px");
+      expect(panel.style.top).toBe("108px");
+    });
+  });
+
   it("changes the parent and applies the returned node state", async () => {
     const {
       parentId: _parentId,
@@ -401,8 +588,8 @@ describe("FloatingNavigationPanel interactions", () => {
 
     render(<FloatingNavigationPanel />);
     await screen.findByText("Child question");
-    await userEvent.click(screen.getByRole("button", { name: "当前节点操作" }));
-    await userEvent.click(screen.getByRole("menuitem", { name: "更换父节点" }));
+    await userEvent.click(screen.getByRole("button", { name: "父节点操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "更换当前父节点" }));
     await userEvent.click(screen.getByRole("radio", { name: /无父节点/ }));
     await userEvent.click(screen.getByRole("button", { name: /确认/ }));
 
@@ -413,6 +600,127 @@ describe("FloatingNavigationPanel interactions", () => {
       currentNodeId: "child",
       context: {},
     });
+  });
+
+  it("labels and selects the latest previous conversation when changing a parent", async () => {
+    const stateWithLatestPrevious: FloatingPanelState = {
+      ...baseState,
+      graphNodes: [
+        ...baseState.graphNodes,
+        { id: "previous", parentId: null, question: "Previous question", status: "pending" },
+      ],
+      parentOptions: [
+        { id: "previous", question: "Previous question", isPrevious: true },
+        { id: "root", question: "Root question" },
+      ],
+    };
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return stateWithLatestPrevious;
+      if (message.type === "SET_PANEL_PARENT") {
+        return {
+          ok: true,
+          state: {
+            ...stateWithLatestPrevious,
+            parentId: "previous",
+            parentQuestion: "Previous question",
+          },
+          result: { nodeId: "child", parentId: "previous" },
+        };
+      }
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    await userEvent.click(screen.getByRole("button", { name: "父节点操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "更换当前父节点" }));
+
+    const latestOption = screen.getByRole("radio", { name: /Previous question.*最后一次/ });
+    expect((latestOption as HTMLInputElement).checked).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /确认/ }));
+
+    await waitFor(() => expect(browserMocks.sendMessage).toHaveBeenCalledWith({
+      type: "SET_PANEL_PARENT",
+      parentId: "previous",
+      currentNodeId: "child",
+      context: {},
+    }));
+  });
+
+  it("keeps the previous-question label for first-time parent selection", async () => {
+    const {
+      currentNodeId: _currentNodeId,
+      parentId: _parentId,
+      parentQuestion: _parentQuestion,
+      parentSummary: _parentSummary,
+      ...stateWithoutCurrentNode
+    } = baseState;
+    const candidateState: FloatingPanelState = {
+      ...stateWithoutCurrentNode,
+      currentCandidateId: "candidate-1",
+      currentQuestion: "Candidate question",
+      currentSummary: "Candidate summary",
+      parentState: "selecting",
+      recommendedParents: [
+        { id: "root", question: "Root question", isPrevious: true },
+      ],
+    };
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return candidateState;
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+
+    expect(await screen.findByText("上一问")).toBeDefined();
+    expect(screen.queryByText("最后一次")).toBeNull();
+  });
+
+  it("changes an arbitrary graph node parent without leaving the graph view", async () => {
+    const viewedState: FloatingPanelState = { ...baseState, viewingNodeId: "child" };
+    const {
+      parentId: _parentId,
+      parentQuestion: _parentQuestion,
+      parentSummary: _parentSummary,
+      ...viewedWithoutParent
+    } = viewedState;
+    const movedState: FloatingPanelState = {
+      ...viewedWithoutParent,
+      parentState: "root",
+    };
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") {
+        return message.selectedNodeId === "child" ? viewedState : baseState;
+      }
+      if (message.type === "SET_PANEL_PARENT") {
+        return {
+          ok: true,
+          state: movedState,
+          result: { nodeId: "child", parentId: null },
+        };
+      }
+      return { ok: true };
+    });
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    await userEvent.click(screen.getByRole("button", { name: "图视角" }));
+    const childNode = await screen.findByRole("button", { name: "Child question" });
+    fireEvent.contextMenu(childNode);
+    await userEvent.click(screen.getByRole("menuitem", { name: "更换父节点" }));
+
+    expect(await screen.findByText("为当前问题选择新的直接父问题")).toBeDefined();
+    expect(screen.getByRole("button", { name: "图视角" }).getAttribute("aria-current")).toBe("page");
+    await userEvent.click(screen.getByRole("radio", { name: /无父节点/ }));
+    await userEvent.click(screen.getByRole("button", { name: /确认/ }));
+
+    await waitFor(() => expect(browserMocks.sendMessage).toHaveBeenCalledWith({
+      type: "SET_PANEL_PARENT",
+      parentId: null,
+      currentNodeId: "child",
+      context: { viewingNodeId: "child" },
+    }));
+    expect(screen.getByRole("button", { name: "图视角" }).getAttribute("aria-current")).toBe("page");
   });
 
   it("updates capture state from the mutation response", async () => {
@@ -442,6 +750,166 @@ describe("FloatingNavigationPanel interactions", () => {
     expect(screen.queryByRole("button", { name: "补录当前对话的最近一个问题" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "选择问题" }));
     expect(await screen.findByText("滚动页面并点击任意用户问题")).toBeDefined();
+  });
+
+  it.each(["inbox", "failed"] as const)(
+    "reopens parent editing for the exact existing %s candidate selected from the page",
+    async (candidateStatus) => {
+    const captured = {
+      question: "Previously captured question",
+      chatId: "chat-1",
+      messageId: "message-existing-candidate",
+    };
+    const candidateState: FloatingPanelState = {
+      captureEnabled: true,
+      projectId: "project-1",
+      projectTitle: "Project",
+      projects: baseState.projects,
+      graphNodes: baseState.graphNodes,
+      currentCandidateId: "candidate-existing",
+      currentQuestion: captured.question,
+      currentSummary: "Candidate summary",
+      parentState: candidateStatus === "failed" ? "unresolved" : "root",
+      recommendedParents: [],
+      parentOptions: [
+        { id: "root", question: "Root question", isPrevious: true },
+        { id: "child", question: "Child question" },
+      ],
+    };
+    captureMocks.getCapturedQuestionFromElement.mockReturnValue(captured);
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
+      if (message.type === "CAPTURE_QUESTION") {
+        return {
+          ok: true,
+          destination: "existing_candidate",
+          candidateId: "candidate-existing",
+          candidateStatus,
+          state: candidateState,
+        };
+      }
+      if (message.type === "SET_PANEL_PARENT") {
+        return {
+          ok: true,
+          state: baseState,
+          result: { nodeId: "child", parentId: "root" },
+        };
+      }
+      return { ok: true };
+    });
+    const pageQuestion = document.createElement("div");
+    pageQuestion.dataset.messageAuthorRole = "user";
+    document.body.append(pageQuestion);
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    await userEvent.click(screen.getByRole("button", { name: "选择页面问题加入 Chat Graph" }));
+    fireEvent.click(pageQuestion);
+
+    expect(await screen.findByText("所选问题已在待讨论中，请继续确认父节点。")).toBeDefined();
+    expect(screen.getByText(captured.question)).toBeDefined();
+    expect(screen.getByText("为当前问题选择新的直接父问题")).toBeDefined();
+    const previous = screen.getByRole("radio", { name: /Root question.*最后一次/ });
+    expect((previous as HTMLInputElement).checked).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /确认/ }));
+
+    await waitFor(() => expect(browserMocks.sendMessage).toHaveBeenCalledWith({
+      type: "SET_PANEL_PARENT",
+      parentId: "root",
+      currentCandidateId: "candidate-existing",
+      context: {},
+    }));
+    },
+  );
+
+  it("shows an existing processing candidate without reopening or restarting parent editing", async () => {
+    const captured = {
+      question: "Candidate still processing",
+      chatId: "chat-1",
+      messageId: "message-processing-candidate",
+    };
+    const processingState: FloatingPanelState = {
+      captureEnabled: true,
+      projectId: "project-1",
+      projectTitle: "Project",
+      projects: baseState.projects,
+      graphNodes: baseState.graphNodes,
+      currentCandidateId: "candidate-processing",
+      currentQuestion: captured.question,
+      parentState: "processing",
+      recommendedParents: [],
+      parentOptions: baseState.parentOptions,
+    };
+    captureMocks.getCapturedQuestionFromElement.mockReturnValue(captured);
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
+      if (message.type === "CAPTURE_QUESTION") {
+        return {
+          ok: true,
+          destination: "existing_candidate",
+          candidateId: "candidate-processing",
+          candidateStatus: "processing",
+          state: processingState,
+        };
+      }
+      return { ok: true };
+    });
+    const pageQuestion = document.createElement("div");
+    pageQuestion.dataset.messageAuthorRole = "user";
+    document.body.append(pageQuestion);
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    await userEvent.click(screen.getByRole("button", { name: "选择页面问题加入 Chat Graph" }));
+    fireEvent.click(pageQuestion);
+
+    expect(await screen.findByText("所选问题已在待讨论中，正在分析父节点，请稍候。")).toBeDefined();
+    expect(screen.getByText(captured.question)).toBeDefined();
+    expect(screen.queryByText("为当前问题选择新的直接父问题")).toBeNull();
+    expect(browserMocks.sendMessage.mock.calls.filter(
+      ([message]) => message.type === "CAPTURE_QUESTION",
+    )).toHaveLength(1);
+  });
+
+  it("switches to an existing graph node with an accurate notice", async () => {
+    const captured = {
+      question: "Root question",
+      chatId: "chat-1",
+      messageId: "message-root",
+    };
+    const existingNodeState = rootViewedState();
+    captureMocks.getCapturedQuestionFromElement.mockReturnValue(captured);
+    browserMocks.sendMessage.mockImplementation(async (message: ExtensionMessage) => {
+      if (message.type === "GET_FLOATING_PANEL_STATE") return baseState;
+      if (message.type === "CAPTURE_QUESTION") {
+        return {
+          ok: true,
+          destination: "existing_node",
+          nodeId: "root",
+          state: existingNodeState,
+        };
+      }
+      return { ok: true };
+    });
+    const pageQuestion = document.createElement("div");
+    pageQuestion.dataset.messageAuthorRole = "user";
+    document.body.append(pageQuestion);
+
+    render(<FloatingNavigationPanel />);
+    await screen.findByText("Child question");
+    const getCallsBefore = browserMocks.sendMessage.mock.calls.filter(
+      ([message]) => message.type === "GET_FLOATING_PANEL_STATE",
+    ).length;
+    await userEvent.click(screen.getByRole("button", { name: "选择页面问题加入 Chat Graph" }));
+    fireEvent.click(pageQuestion);
+
+    expect(await screen.findByText("所选问题已经在当前项目中，已切换到对应节点。")).toBeDefined();
+    expect(screen.getByText("Root question")).toBeDefined();
+    expect(screen.queryByText("为当前问题选择新的直接父问题")).toBeNull();
+    const getCallsAfter = browserMocks.sendMessage.mock.calls.filter(
+      ([message]) => message.type === "GET_FLOATING_PANEL_STATE",
+    ).length;
+    expect(getCallsAfter).toBe(getCallsBefore);
   });
 
   it("reopens a dismissed floating panel when the side panel requests it", async () => {

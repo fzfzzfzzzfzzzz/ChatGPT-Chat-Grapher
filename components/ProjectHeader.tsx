@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   FolderKanban,
+  FileText,
   Pencil,
   PictureInPicture2,
   Plus,
@@ -17,6 +18,7 @@ type Props = {
   onEdit: () => void;
   onDelete: () => void;
   onOpenFloatingPanel: () => void;
+  onReview?: () => void;
   onSettings: () => void;
 };
 
@@ -28,6 +30,7 @@ export function ProjectHeader({
   onEdit,
   onDelete,
   onOpenFloatingPanel,
+  onReview,
   onSettings,
 }: Props) {
   return (
@@ -61,6 +64,11 @@ export function ProjectHeader({
         </div>
       </div>
       <div className="project-header__actions">
+        {selectedProject && onReview ? (
+          <button className="icon-button" type="button" title="总结当前对话" aria-label="总结当前对话" onClick={onReview}>
+            <FileText size={15} />
+          </button>
+        ) : null}
         <button
           className="icon-button"
           type="button"

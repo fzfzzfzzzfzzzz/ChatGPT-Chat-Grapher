@@ -54,6 +54,152 @@ describe("DiscussionService v0.5", () => {
     expect(await database.candidates.count()).toBe(1);
   });
 
+  it("distinguishes new candidates, existing candidates and existing nodes", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const captured = capture("Question", 1);
+
+    const created = await service.findOrCreateCandidate(project.id, captured);
+    expect(created.kind).toBe("created_candidate");
+    if (created.kind !== "created_candidate") throw new Error("Expected a new candidate.");
+
+    const existingCandidate = await service.findOrCreateCandidate(project.id, captured);
+    expect(existingCandidate).toEqual({
+      kind: "existing_candidate",
+      candidate: created.candidate,
+    });
+
+    const node = await service.promoteCandidate(created.candidate.id, null, "user");
+    const existingNode = await service.findOrCreateCandidate(project.id, captured);
+    expect(existingNode).toEqual({ kind: "existing_node", node });
+    expect(await database.candidates.count()).toBe(0);
+    expect(await database.nodes.count()).toBe(1);
+  });
+
+  it("realizes a matching planned branch without creating a duplicate node", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const root = await service.createNode({
+      projectId: project.id,
+      ...capture("Root question", 1),
+    });
+    const planned = await service.createPlannedNode({
+      projectId: project.id,
+      chatId: "chat-1",
+      parentId: root.id,
+      reviewId: "review-1",
+      candidate: {
+        id: "branch-1",
+        title: "Next step",
+        rationale: "Validate the proposed direction.",
+        firstQuestion: "  What is the NEXT   step? ",
+      },
+    });
+    await service.createNode({
+      projectId: project.id,
+      ...capture("An unrelated focused question", 2),
+      parentId: root.id,
+    });
+
+    const result = await service.findOrCreateCandidate(project.id, {
+      ...capture("what is the next step?", 3),
+      messageLocator: {
+        version: 1,
+        messageId: "message-3",
+        ordinal: 3,
+        fingerprint: "fingerprint-3",
+      },
+    });
+
+    expect(result.kind).toBe("existing_node");
+    if (result.kind !== "existing_node") throw new Error("Expected the planned node to be realized.");
+    expect(result.node).toMatchObject({
+      id: planned.id,
+      kind: "captured",
+      parentId: root.id,
+      messageId: "message-3",
+      plannedFromReviewId: "review-1",
+    });
+    const repeatedAfterCapture = await service.createPlannedNode({
+      projectId: project.id,
+      chatId: "chat-1",
+      parentId: root.id,
+      reviewId: "review-1",
+      candidate: {
+        id: "branch-repeated",
+        title: "Repeated next step",
+        rationale: "The same recommendation was clicked again after sending it.",
+        firstQuestion: " WHAT is the next step? ",
+      },
+    });
+    expect(repeatedAfterCapture).toMatchObject({
+      id: planned.id,
+      kind: "captured",
+      messageId: "message-3",
+      plannedFromReviewId: "review-1",
+    });
+    expect(await database.nodes.count()).toBe(3);
+    expect(await database.candidates.count()).toBe(0);
+  });
+
+  it("atomically deduplicates repeated and concurrent planned branch actions", async () => {
+    const project = await service.createProject("Project", "Goal");
+    const root = await service.createNode({
+      projectId: project.id,
+      ...capture("Root question", 1),
+    });
+    const createSuggestion = (firstQuestion: string, candidateId: string) => service.createPlannedNode({
+      projectId: project.id,
+      chatId: "chat-1",
+      parentId: root.id,
+      reviewId: "review-1",
+      candidate: {
+        id: candidateId,
+        title: "Next step",
+        rationale: "Validate the proposed direction.",
+        firstQuestion,
+      },
+    });
+
+    const repeated = await Promise.all([
+      createSuggestion("What is the next step?", "branch-1"),
+      createSuggestion("  what IS the   next step? ", "branch-2"),
+      createSuggestion("What is the next step?", "branch-3"),
+    ]);
+
+    expect(new Set(repeated.map((node) => node.id))).toHaveLength(1);
+    expect((await service.nodes.listForProject(project.id)).filter((node) => (
+      node.kind === "planned" && node.plannedFromReviewId === "review-1"
+    ))).toHaveLength(1);
+
+    const differentReview = await service.createPlannedNode({
+      projectId: project.id,
+      chatId: "chat-1",
+      parentId: root.id,
+      reviewId: "review-2",
+      candidate: {
+        id: "branch-other-review",
+        title: "Next step",
+        rationale: "A separately generated recommendation.",
+        firstQuestion: "What is the next step?",
+      },
+    });
+    const differentChat = await service.createPlannedNode({
+      projectId: project.id,
+      chatId: "chat-2",
+      parentId: root.id,
+      reviewId: "review-1",
+      candidate: {
+        id: "branch-other-chat",
+        title: "Next step",
+        rationale: "The same recommendation in another conversation.",
+        firstQuestion: "What is the next step?",
+      },
+    });
+
+    expect(differentReview.id).not.toBe(repeated[0]!.id);
+    expect(differentChat.id).not.toBe(repeated[0]!.id);
+    expect(await database.nodes.count()).toBe(4);
+  });
+
   it("does not persist ephemeral assistant context in candidates or nodes", async () => {
     const project = await service.createProject("Project", "Goal");
     const candidate = await service.createCandidate(project.id, {
@@ -545,6 +691,9 @@ describe("DiscussionService v0.5", () => {
       "nodeEvents",
       "nodes",
       "projects",
+      "reviewDocuments",
+      "reviewJobs",
+      "reviewVersions",
     ]);
     migrated.close();
     await migrated.delete();

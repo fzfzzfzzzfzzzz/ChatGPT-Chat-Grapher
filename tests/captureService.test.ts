@@ -1,23 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  canAutoCaptureQuestion,
   canCaptureQuestion,
-  captureServiceEnabledFromStorage,
 } from "../shared/captureService";
 
-describe("capture service preference", () => {
-  it("defaults to enabled when no preference has been saved", () => {
-    expect(captureServiceEnabledFromStorage(undefined)).toBe(true);
-  });
-
-  it("is disabled only by an explicit false value", () => {
-    expect(captureServiceEnabledFromStorage(false)).toBe(false);
-    expect(captureServiceEnabledFromStorage(true)).toBe(true);
-    expect(captureServiceEnabledFromStorage("false")).toBe(true);
-  });
-
+describe("capture service", () => {
   it("allows a one-off manual capture while continuous capture is paused", () => {
     expect(canCaptureQuestion(false, false)).toBe(false);
     expect(canCaptureQuestion(false, true)).toBe(true);
     expect(canCaptureQuestion(true, false)).toBe(true);
+  });
+
+  it("requires both an enabled switch and an explicitly selected project for auto capture", () => {
+    expect(canAutoCaptureQuestion(true, true)).toBe(true);
+    expect(canAutoCaptureQuestion(true, false)).toBe(false);
+    expect(canAutoCaptureQuestion(false, true)).toBe(false);
+    expect(canAutoCaptureQuestion(false, false)).toBe(false);
   });
 });

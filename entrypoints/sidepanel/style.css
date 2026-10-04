@@ -232,14 +232,30 @@ input:focus, textarea:focus, select:focus { border-color: #60a5fa; box-shadow: 0
 input[readonly] { color: #64748b; background: #f8fafc; cursor: default; }
 
 .graph-card { overflow: hidden; border: 1px solid #e2e8f0; border-radius: 14px; background: #fff; }
-.graph-card__legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #eef2f7; color: #64748b; font-size: 8px; }
+.graph-card__toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; padding: 7px 8px; border-bottom: 1px solid #eef2f7; }
+.graph-card__legend { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 8px; color: #64748b; font-size: 8px; }
 .graph-card__legend span { display: inline-flex; align-items: center; gap: 3px; }
 .graph-card__legend i { width: 6px; height: 6px; border-radius: 50%; }
+.graph-display-switch { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+.graph-display-switch button { min-height: 24px; padding: 3px 7px; border: 0; border-radius: 6px; color: #64748b; background: transparent; font-size: 9px; font-weight: 750; cursor: pointer; }
+.graph-display-switch button:hover { color: #1d4ed8; background: #fff; }
+.graph-display-switch button.is-active { color: #1d4ed8; background: #fff; box-shadow: 0 1px 4px rgba(15, 23, 42, .1); }
 .graph-canvas { position: relative; height: calc(100vh - 220px); min-height: 420px; }
 .graph-card__hint { margin: 0; padding: 7px 10px; border-top: 1px solid #eef2f7; color: #94a3b8; font-size: 9px; }
 .graph-loading { display: grid; place-items: center; min-height: 420px; color: #64748b; font-size: 11px; }
 .react-flow__attribution { display: none; }
 .react-flow__node { line-height: 1.35; }
+.graph-question-node__question { max-height: 4.15em; overflow: hidden; }
+.graph-reference-badges { display: flex; gap: 5px; margin-top: 7px; padding: 0; border: 0; color: #475569; background: transparent; font: inherit; font-size: 10px; cursor: pointer; }
+.graph-reference-badges span { padding: 2px 5px; border: 1px solid #dbe3ee; border-radius: 999px; background: #f8fafc; }
+.graph-reference-badges:hover span,
+.graph-reference-badges:focus-visible span { border-color: #93c5fd; background: #eff6ff; }
+.react-flow__node.graph-flow-node--compact.selectable:hover,
+.react-flow__node.graph-flow-node--compact.selectable.selected,
+.react-flow__node.graph-flow-node--compact.selectable:focus,
+.react-flow__node.graph-flow-node--compact.selectable:focus-visible { box-shadow: 0 0 0 4px rgba(37, 99, 235, .22), 0 4px 12px rgba(37, 99, 235, .2) !important; }
+.graph-node-tooltip { position: absolute; z-index: 18; width: max-content; max-width: min(300px, calc(100% - 24px)); padding: 7px 9px; border-radius: 8px; color: #fff; background: rgba(15, 23, 42, .94); box-shadow: 0 8px 24px rgba(15, 23, 42, .2); font-size: 10px; line-height: 1.45; pointer-events: none; transform: translate(-50%, -100%); }
+.graph-node-tooltip.is-below { transform: translate(-50%, 0); }
 .graph-context-menu {
   position: absolute;
   z-index: 20;
@@ -329,6 +345,35 @@ input[readonly] { color: #64748b; background: #f8fafc; cursor: default; }
 .question-readonly p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; }
 .question-dialog__nav { display: flex; gap: 7px; }
 .question-dialog__nav .button { flex: 1; }
+.question-references { display: grid; gap: 8px; }
+.question-references__heading { display: flex; align-items: center; gap: 6px; color: #64748b; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.question-references__heading small { display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: 999px; color: #334155; background: #e2e8f0; font-size: 9px; }
+.question-references__list { display: grid; gap: 7px; }
+.question-reference { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 9px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; }
+.question-reference__icon { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: #2563eb; background: #eff6ff; }
+.question-reference__content { display: grid; min-width: 0; gap: 4px; }
+.question-reference__content strong { overflow: hidden; color: #1e293b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.question-reference__content small { color: #64748b; font-size: 9px; line-height: 1.4; }
+.question-reference__content blockquote { margin: 0; color: #475569; font-size: 10px; line-height: 1.5; }
+.question-reference__preview { display: block; width: fit-content; margin-top: 3px; }
+.question-reference__preview img { display: block; width: auto; max-width: 180px; max-height: 120px; border: 1px solid #e2e8f0; border-radius: 8px; object-fit: cover; }
+.question-reference__locate { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 7px; color: #334155; background: #fff; font-size: 9px; cursor: pointer; }
+.question-reference__locate:hover,
+.question-reference__locate:focus-visible { border-color: #60a5fa; color: #1d4ed8; background: #eff6ff; }
+.question-reference__locate:disabled { cursor: wait; opacity: .65; }
+.parent-dialog__search { gap: 6px !important; }
+.parent-dialog__search-field { position: relative; }
+.parent-dialog__search-field svg { position: absolute; top: 50%; left: 10px; color: #94a3b8; transform: translateY(-50%); pointer-events: none; }
+.parent-dialog__search-field input { padding-left: 31px; }
+.parent-dialog__options { display: grid; gap: 5px; max-height: min(360px, 46vh); overflow: auto; padding: 2px; }
+.parent-dialog__option { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 9px; border: 1px solid #e2e8f0; border-radius: 9px; color: #334155; background: #fff; cursor: pointer; }
+.parent-dialog__option:hover { border-color: #bfdbfe; background: #f8fbff; }
+.parent-dialog__option:has(input:checked) { border-color: #60a5fa; background: #eff6ff; }
+.parent-dialog__option input { width: auto; }
+.parent-dialog__option span { overflow: hidden; font-size: 10px; font-weight: 650; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.parent-dialog__latest { padding: 2px 5px; border-radius: 999px; color: #1d4ed8; background: #dbeafe; font-size: 8px; font-weight: 800; white-space: nowrap; }
+.parent-dialog__option--root { border-style: dashed; }
+.parent-dialog__empty { margin: 4px 0; color: #94a3b8; font-size: 10px; text-align: center; }
 .open-conversation-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .confirm-copy { display: flex; align-items: flex-start; gap: 9px; color: #991b1b; }
 .confirm-copy--primary { color: #2563eb; }

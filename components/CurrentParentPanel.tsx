@@ -7,7 +7,7 @@ type Props = {
   current: QuestionNode;
   parent?: QuestionNode;
   onEdit: () => void;
-  onLocate: () => void;
+  onLocate?: () => void;
   onSetStatus: (status: NodeStatus) => void;
 };
 
@@ -30,7 +30,7 @@ export function CurrentParentPanel({
     <>
       <section className="focus-context-card focus-context-card--current">
         <div className="focus-context-card__topline">
-          <div className="section-label section-label--current">CURRENT</div>
+          <div className="section-label section-label--current">CURRENT{current.kind === "planned" ? " · PLANNED" : ""}</div>
           <div className="focus-context-card__meta">
             <StatusPill status={current.status} />
             <button className="text-button" type="button" onClick={onEdit}>编辑节点</button>
@@ -53,8 +53,8 @@ export function CurrentParentPanel({
           ) : null}
         </div>
         <div className="focus-context-card__actions">
-          <button className="button" type="button" onClick={onLocate}>
-            <Crosshair size={14} /> 原始消息
+          <button className="button" type="button" disabled={!onLocate} onClick={onLocate}>
+            <Crosshair size={14} /> {current.kind === "planned" ? "发送后可定位" : "原始消息"}
           </button>
           <select
             aria-label="修改问题状态"

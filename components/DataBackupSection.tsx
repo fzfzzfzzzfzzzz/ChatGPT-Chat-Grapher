@@ -23,7 +23,7 @@ export function DataBackupSection({ onExport, onImport }: Props) {
       const result = await onExport();
       setAction({
         status: "success",
-        message: `已导出 ${result.projectCount} 个项目、${result.nodeCount} 个问题节点。`,
+        message: `已导出 ${result.projectCount} 个项目、${result.nodeCount} 个问题节点、${result.reviewDocumentCount} 份总结（${result.reviewVersionCount} 个版本）。`,
       });
     } catch (error) {
       setAction({ status: "error", message: messageFromError(error, "导出失败，请重试。") });
@@ -40,7 +40,7 @@ export function DataBackupSection({ onExport, onImport }: Props) {
       const result = await onImport(file);
       setAction({
         status: "success",
-        message: `已导入 ${result.projectCount} 个项目、${result.nodeCount} 个问题节点。`,
+        message: `已导入 ${result.projectCount} 个项目、${result.nodeCount} 个问题节点、${result.reviewDocumentCount} 份总结（${result.reviewVersionCount} 个版本）。`,
       });
     } catch (error) {
       setAction({ status: "error", message: messageFromError(error, "导入失败，请检查备份文件。") });
@@ -79,7 +79,7 @@ export function DataBackupSection({ onExport, onImport }: Props) {
           onChange={(event) => void importData(event)}
         />
       </div>
-      <p className="data-backup-note">备份包含问题图和消息定位信息，不包含 AI 设置或 API Key。</p>
+      <p className="data-backup-note">备份包含问题图、总结及版本、消息定位和轻量引用信息（可能含缩略图、回答短摘录与最长 240 字的总结证据），不包含完整对话原文、AI 设置或 API Key。</p>
       {action.status === "success" ? (
         <div className="provider-feedback is-success" role="status">
           <CheckCircle2 size={14} /> <span>{action.message}</span>

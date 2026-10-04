@@ -1,9 +1,9 @@
 {
   "name": "chatgpt-discussion-map",
-  "version": "0.12.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "A local-first question graph for navigating complex ChatGPT discussions.",
+  "description": "A local-first ChatGPT question graph with structured, evidence-linked Conversation Reviews.",
   "license": "MIT",
   "homepage": "https://github.com/fzfzzfzzzfzzzz/ChatGPT-Chat-Grapher#readme",
   "repository": {

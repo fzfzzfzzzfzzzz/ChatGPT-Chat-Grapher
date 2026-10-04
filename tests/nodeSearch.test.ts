@@ -29,6 +29,10 @@ describe("searchProjectNodes", () => {
     node("new-question", "Fix   OAuth callback", "Latest attempt", 20),
     node("unrelated", "Database migration", "Move schema", 40),
   ];
+  nodes[3]!.references = [
+    { id: "file-1", type: "file", name: "architecture.pdf" },
+    { id: "quote-1", type: "assistant_quote", excerpt: "Keep the cache boundary stable" },
+  ];
 
   it("returns no nodes for an empty query", () => {
     expect(searchProjectNodes(nodes, "   ")).toEqual([]);
@@ -49,5 +53,17 @@ describe("searchProjectNodes", () => {
       ["old-question", "question"],
       ["summary", "summary"],
     ]);
+  });
+
+  it("finds attachment names and quoted answer excerpts", () => {
+    expect(searchProjectNodes(nodes, "architecture")[0]).toMatchObject({
+      field: "reference",
+      referenceText: "architecture.pdf",
+      node: { id: "unrelated" },
+    });
+    expect(searchProjectNodes(nodes, "cache boundary")[0]).toMatchObject({
+      field: "reference",
+      node: { id: "unrelated" },
+    });
   });
 });

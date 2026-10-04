@@ -3,13 +3,31 @@ import type {
   Project,
   QuestionCandidate,
   QuestionNode,
+  QuestionReference,
+  ReferenceLocator,
+  ReviewDocument,
+  ReviewEvidence,
+  ReviewItem,
+  ReviewModuleId,
+  ReviewModuleResult,
+  ReviewModuleSnapshot,
+  ReviewScope,
+  ReviewVersion,
 } from "../types/domain";
+import { isAIProviderId } from "../ai/providers";
+import {
+  MAX_ASSISTANT_QUOTE_LENGTH,
+  MAX_QUESTION_REFERENCES,
+  MAX_REFERENCE_NAME_LENGTH,
+  isAllowedThumbnailDataUrl,
+} from "../shared/questionReferences";
 import { createId } from "../utils/id";
+import { createScopeFamilyKey } from "../review/scope";
 import type { DiscussionMapDatabase } from "./database";
 
 export const CHAT_GRAPH_BACKUP_FORMAT = "chat-graph-backup";
-export const CHAT_GRAPH_BACKUP_SCHEMA_VERSION = 1;
-export const MAX_BACKUP_FILE_BYTES = 10 * 1024 * 1024;
+export const CHAT_GRAPH_BACKUP_SCHEMA_VERSION = 3;
+export const MAX_BACKUP_FILE_BYTES = 50 * 1024 * 1024;
 
 export type DiscussionBackup = {
   format: typeof CHAT_GRAPH_BACKUP_FORMAT;
@@ -21,6 +39,8 @@ export type DiscussionBackup = {
     nodes: QuestionNode[];
     candidates: QuestionCandidate[];
     nodeEvents: NodeEvent[];
+    reviewDocuments: ReviewDocument[];
+    reviewVersions: ReviewVersion[];
   };
 };
 
@@ -28,6 +48,8 @@ export type BackupSummary = {
   projectCount: number;
   nodeCount: number;
   candidateCount: number;
+  reviewDocumentCount: number;
+  reviewVersionCount: number;
 };
 
 export type BackupImportResult = BackupSummary & {
@@ -43,14 +65,23 @@ export async function createDiscussionBackup(
   database: DiscussionMapDatabase,
   extensionVersion: string,
 ): Promise<DiscussionBackup> {
-  const [projects, nodes, candidates, nodeEvents] = await database.transaction(
+  const [projects, nodes, candidates, nodeEvents, reviewDocuments, reviewVersions] = await database.transaction(
     "r",
-    [database.projects, database.nodes, database.candidates, database.nodeEvents],
+    [
+      database.projects,
+      database.nodes,
+      database.candidates,
+      database.nodeEvents,
+      database.reviewDocuments,
+      database.reviewVersions,
+    ],
     () => Promise.all([
       database.projects.toArray(),
       database.nodes.toArray(),
       database.candidates.toArray(),
       database.nodeEvents.toArray(),
+      database.reviewDocuments.toArray(),
+      database.reviewVersions.toArray(),
     ]),
   );
 
@@ -61,9 +92,13 @@ export async function createDiscussionBackup(
     exportedAt: new Date().toISOString(),
     data: {
       projects: sortByCreatedAt(projects),
-      nodes: sortByCreatedAt(nodes),
+      nodes: sortByCreatedAt(nodes).map((node) => ({ ...node, kind: node.kind ?? "captured" })),
       candidates: sortByCreatedAt(candidates),
       nodeEvents: sortByCreatedAt(nodeEvents),
+      reviewDocuments: sortByCreatedAt(reviewDocuments),
+      reviewVersions: [...reviewVersions].sort(
+        (left, right) => left.generatedAt - right.generatedAt || left.id.localeCompare(right.id),
+      ),
     },
   };
 }
@@ -87,7 +122,11 @@ export function parseDiscussionBackup(value: unknown): DiscussionBackup {
   if (root.format !== CHAT_GRAPH_BACKUP_FORMAT) {
     throw new BackupValidationError("这不是 Chat Graph 备份文件。");
   }
-  if (root.schemaVersion !== CHAT_GRAPH_BACKUP_SCHEMA_VERSION) {
+  if (
+    root.schemaVersion !== 1 &&
+    root.schemaVersion !== 2 &&
+    root.schemaVersion !== CHAT_GRAPH_BACKUP_SCHEMA_VERSION
+  ) {
     throw new BackupValidationError(`不支持该备份版本：${String(root.schemaVersion)}。`);
   }
 
@@ -106,6 +145,12 @@ export function parseDiscussionBackup(value: unknown): DiscussionBackup {
       nodes: expectArray(data.nodes, "data.nodes").map(parseNode),
       candidates: expectArray(data.candidates, "data.candidates").map(parseCandidate),
       nodeEvents: expectArray(data.nodeEvents, "data.nodeEvents").map(parseNodeEvent),
+      reviewDocuments: root.schemaVersion === 3 && data.reviewDocuments !== undefined
+        ? expectArray(data.reviewDocuments, "data.reviewDocuments").map(parseReviewDocument)
+        : [],
+      reviewVersions: root.schemaVersion === 3 && data.reviewVersions !== undefined
+        ? expectArray(data.reviewVersions, "data.reviewVersions").map(parseReviewVersion)
+        : [],
     },
   };
   validateBackupRelationships(backup);
@@ -127,13 +172,26 @@ export async function importDiscussionBackup(
     backup.data.candidates.map((candidate) => [candidate.id, createId("candidate")]),
   );
   const eventIds = new Map(backup.data.nodeEvents.map((event) => [event.id, createId("event")]));
+  const reviewDocumentIds = new Map(
+    backup.data.reviewDocuments.map((document) => [document.id, createId("review")]),
+  );
+  const reviewVersionIds = new Map(
+    backup.data.reviewVersions.map((version) => [version.id, createId("review-version")]),
+  );
   const sourceNodes = new Map(backup.data.nodes.map((node) => [node.id, node]));
 
   const importedProjectIds = backup.data.projects.map((project) => projectIds.get(project.id)!);
 
   await database.transaction(
     "rw",
-    [database.projects, database.nodes, database.candidates, database.nodeEvents],
+    [
+      database.projects,
+      database.nodes,
+      database.candidates,
+      database.nodeEvents,
+      database.reviewDocuments,
+      database.reviewVersions,
+    ],
     async () => {
       const usedTitles = new Set((await database.projects.toArray()).map((project) => project.title));
       const projects = backup.data.projects.map((project): Project => {
@@ -149,12 +207,18 @@ export async function importDiscussionBackup(
           updatedAt: project.updatedAt,
         };
       });
-      const nodes = backup.data.nodes.map((node): QuestionNode => ({
-        ...node,
-        id: nodeIds.get(node.id)!,
-        projectId: projectIds.get(node.projectId)!,
-        parentId: node.parentId ? nodeIds.get(node.parentId)! : null,
-      }));
+      const nodes = backup.data.nodes.map((node): QuestionNode => {
+        const { plannedFromReviewId, ...source } = node;
+        return {
+          ...source,
+          id: nodeIds.get(node.id)!,
+          projectId: projectIds.get(node.projectId)!,
+          parentId: node.parentId ? nodeIds.get(node.parentId)! : null,
+          ...(plannedFromReviewId && reviewDocumentIds.has(plannedFromReviewId)
+            ? { plannedFromReviewId: reviewDocumentIds.get(plannedFromReviewId)! }
+            : {}),
+        };
+      });
       const candidates = backup.data.candidates.map((candidate): QuestionCandidate => ({
         ...candidate,
         id: candidateIds.get(candidate.id)!,
@@ -177,11 +241,59 @@ export async function importDiscussionBackup(
           ? nodeIds.get(event.afterParentId) ?? null
           : null,
       }));
+      const reviewDocuments = backup.data.reviewDocuments.map((document): ReviewDocument => {
+        const sourceVersion = backup.data.reviewVersions.find((version) => (
+          version.documentId === document.id
+          && (version.id === document.activeVersionId || document.activeVersionId === undefined)
+        ));
+        const mappedScopeAnchor = sourceVersion?.scope.anchorNodeId
+          ? nodeIds.get(sourceVersion.scope.anchorNodeId)
+          : undefined;
+        const mappedProjectId = projectIds.get(document.projectId)!;
+        const mapped: ReviewDocument = {
+          id: reviewDocumentIds.get(document.id)!,
+          projectId: mappedProjectId,
+          chatId: document.chatId,
+          scopeFamilyKey: sourceVersion
+            ? createScopeFamilyKey({
+                projectId: mappedProjectId,
+                chatId: document.chatId,
+                scopeType: sourceVersion.scope.type,
+                ...(mappedScopeAnchor ? { anchorNodeId: mappedScopeAnchor } : {}),
+              })
+            : `imported:${mappedProjectId}:${document.scopeFamilyKey}`,
+          entrySource: document.entrySource,
+          createdAt: document.createdAt,
+          updatedAt: document.updatedAt,
+        };
+        if (document.activeVersionId && reviewVersionIds.has(document.activeVersionId)) {
+          mapped.activeVersionId = reviewVersionIds.get(document.activeVersionId)!;
+        }
+        if (document.graphAnchorNodeId && nodeIds.has(document.graphAnchorNodeId)) {
+          mapped.graphAnchorNodeId = nodeIds.get(document.graphAnchorNodeId)!;
+        }
+        if (document.supersedesDocumentId && reviewDocumentIds.has(document.supersedesDocumentId)) {
+          mapped.supersedesDocumentId = reviewDocumentIds.get(document.supersedesDocumentId)!;
+        }
+        if (document.savedAt !== undefined) mapped.savedAt = document.savedAt;
+        return mapped;
+      });
+      const reviewVersions = backup.data.reviewVersions.map((version): ReviewVersion => ({
+        ...version,
+        id: reviewVersionIds.get(version.id)!,
+        documentId: reviewDocumentIds.get(version.documentId)!,
+        projectId: projectIds.get(version.projectId)!,
+        scope: mapImportedReviewScope(version.scope, nodeIds),
+        evidences: version.evidences.map((evidence) => mapImportedReviewEvidence(evidence, nodeIds)),
+        modules: version.modules.map((module) => mapImportedReviewModule(module, nodeIds)),
+      }));
 
       await database.projects.bulkAdd(projects);
       if (nodes.length) await database.nodes.bulkAdd(nodes);
       if (candidates.length) await database.candidates.bulkAdd(candidates);
       if (nodeEvents.length) await database.nodeEvents.bulkAdd(nodeEvents);
+      if (reviewDocuments.length) await database.reviewDocuments.bulkAdd(reviewDocuments);
+      if (reviewVersions.length) await database.reviewVersions.bulkAdd(reviewVersions);
     },
   );
 
@@ -189,6 +301,8 @@ export async function importDiscussionBackup(
     projectCount: backup.data.projects.length,
     nodeCount: backup.data.nodes.length,
     candidateCount: backup.data.candidates.length,
+    reviewDocumentCount: backup.data.reviewDocuments.length,
+    reviewVersionCount: backup.data.reviewVersions.length,
     eventCount: backup.data.nodeEvents.length,
     importedProjectIds,
   };
@@ -227,10 +341,23 @@ function parseNode(value: unknown, index: number): QuestionNode {
     createdAt: expectTimestamp(record.createdAt, `${path}.createdAt`),
     updatedAt: expectTimestamp(record.updatedAt, `${path}.updatedAt`),
   };
+  if (record.kind !== undefined && record.kind !== "captured" && record.kind !== "planned") {
+    throw new BackupValidationError(`${path}.kind 无效。`);
+  }
+  node.kind = record.kind === "planned" ? "planned" : "captured";
+  const plannedFromReviewId = optionalId(
+    record.plannedFromReviewId,
+    `${path}.plannedFromReviewId`,
+  );
+  if (plannedFromReviewId) node.plannedFromReviewId = plannedFromReviewId;
   const messageAnchor = optionalString(record.messageAnchor, `${path}.messageAnchor`);
   if (messageAnchor) node.messageAnchor = messageAnchor;
   if (record.messageLocator !== undefined) {
     node.messageLocator = parseMessageLocator(record.messageLocator, `${path}.messageLocator`);
+  }
+  if (record.references !== undefined) {
+    const references = parseQuestionReferences(record.references, `${path}.references`);
+    if (references.length) node.references = references;
   }
   return node;
 }
@@ -269,7 +396,112 @@ function parseCandidate(value: unknown, index: number): QuestionCandidate {
   if (record.messageLocator !== undefined) {
     candidate.messageLocator = parseMessageLocator(record.messageLocator, `${path}.messageLocator`);
   }
+  if (record.references !== undefined) {
+    const references = parseQuestionReferences(record.references, `${path}.references`);
+    if (references.length) candidate.references = references;
+  }
   return candidate;
+}
+
+function parseQuestionReferences(value: unknown, path: string): QuestionReference[] {
+  const values = expectArray(value, path);
+  if (values.length > MAX_QUESTION_REFERENCES) {
+    throw new BackupValidationError(`${path} 超过 ${MAX_QUESTION_REFERENCES} 条限制。`);
+  }
+  const references = values.map((item, index): QuestionReference => {
+    const itemPath = `${path}[${index}]`;
+    const record = expectRecord(item, itemPath);
+    const id = expectId(record.id, `${itemPath}.id`);
+    const sourceLocator = record.sourceLocator === undefined
+      ? undefined
+      : parseReferenceLocator(record.sourceLocator, `${itemPath}.sourceLocator`);
+    if (record.type === "file") {
+      const name = expectString(record.name, `${itemPath}.name`);
+      if (name.length > MAX_REFERENCE_NAME_LENGTH) {
+        throw new BackupValidationError(`${itemPath}.name 过长。`);
+      }
+      const mimeType = optionalString(record.mimeType, `${itemPath}.mimeType`);
+      const size = optionalNonNegativeNumber(record.size, `${itemPath}.size`);
+      return {
+        id,
+        type: "file",
+        name,
+        ...(mimeType ? { mimeType } : {}),
+        ...(size !== undefined ? { size } : {}),
+        ...(sourceLocator ? { sourceLocator } : {}),
+      };
+    }
+    if (record.type === "image") {
+      const name = optionalString(record.name, `${itemPath}.name`);
+      const alt = optionalString(record.alt, `${itemPath}.alt`);
+      if ((name?.length ?? 0) > MAX_REFERENCE_NAME_LENGTH || (alt?.length ?? 0) > MAX_REFERENCE_NAME_LENGTH) {
+        throw new BackupValidationError(`${itemPath} 的图片名称或说明过长。`);
+      }
+      const thumbnailDataUrl = optionalString(
+        record.thumbnailDataUrl,
+        `${itemPath}.thumbnailDataUrl`,
+      );
+      if (thumbnailDataUrl && !isAllowedThumbnailDataUrl(thumbnailDataUrl)) {
+        throw new BackupValidationError(`${itemPath}.thumbnailDataUrl 无效或过大。`);
+      }
+      if (!name && !alt && !thumbnailDataUrl) {
+        throw new BackupValidationError(`${itemPath} 缺少可显示的图片信息。`);
+      }
+      return {
+        id,
+        type: "image",
+        ...(name ? { name } : {}),
+        ...(alt ? { alt } : {}),
+        ...(thumbnailDataUrl ? { thumbnailDataUrl } : {}),
+        ...(sourceLocator ? { sourceLocator } : {}),
+      };
+    }
+    if (record.type === "assistant_quote") {
+      const excerpt = expectString(record.excerpt, `${itemPath}.excerpt`);
+      if (excerpt.length > MAX_ASSISTANT_QUOTE_LENGTH) {
+        throw new BackupValidationError(`${itemPath}.excerpt 过长。`);
+      }
+      return {
+        id,
+        type: "assistant_quote",
+        excerpt,
+        ...(sourceLocator ? { sourceLocator } : {}),
+      };
+    }
+    throw new BackupValidationError(`${itemPath}.type 无效。`);
+  });
+  const ids = new Set<string>();
+  for (const reference of references) {
+    if (ids.has(reference.id)) throw new BackupValidationError(`${path} 中存在重复引用 ID。`);
+    ids.add(reference.id);
+  }
+  return references;
+}
+
+function parseReferenceLocator(value: unknown, path: string): ReferenceLocator {
+  const record = expectRecord(value, path);
+  if (record.version !== 1) throw new BackupValidationError(`${path}.version 无效。`);
+  if (record.role !== "user" && record.role !== "assistant") {
+    throw new BackupValidationError(`${path}.role 无效。`);
+  }
+  const locator: ReferenceLocator = {
+    version: 1,
+    chatId: expectId(record.chatId, `${path}.chatId`),
+    role: record.role,
+  };
+  const messageId = optionalId(record.messageId, `${path}.messageId`);
+  const turnId = optionalId(record.turnId, `${path}.turnId`);
+  const fingerprint = optionalString(record.fingerprint, `${path}.fingerprint`);
+  if (messageId) locator.messageId = messageId;
+  if (turnId) locator.turnId = turnId;
+  if (fingerprint) locator.fingerprint = fingerprint;
+  if (record.ordinal !== undefined) {
+    if (!Number.isSafeInteger(record.ordinal) || (record.ordinal as number) < 0) {
+      throw new BackupValidationError(`${path}.ordinal 无效。`);
+    }
+    locator.ordinal = record.ordinal as number;
+  }
+  return locator;
 }
 
 function parseNodeEvent(value: unknown, index: number): NodeEvent {
@@ -300,6 +532,279 @@ function parseNodeEvent(value: unknown, index: number): NodeEvent {
     event.undoneAt = expectTimestamp(record.undoneAt, `${path}.undoneAt`);
   }
   return event;
+}
+
+const REVIEW_MODULE_IDS = new Set<ReviewModuleId>([
+  "discussion_overview",
+  "user_goal",
+  "key_takeaways",
+  "consensus",
+  "user_decisions",
+  "unresolved_questions",
+  "missed_branches",
+  "user_confusions",
+  "next_steps",
+  "continuation_context",
+  "considered_options",
+  "disagreements",
+  "tradeoffs",
+  "rejected_or_deferred_options",
+  "assumptions_constraints",
+  "facts_to_verify",
+  "clarified_technical_details",
+  "understanding_changes",
+  "important_terms",
+  "prerequisite_gaps",
+  "product_problem",
+  "confirmed_scope",
+  "solution_architecture",
+  "technology_stack",
+  "business_technical_flow",
+  "data_interfaces_tools_skills",
+  "risks_dependencies",
+  "progress_release_plan",
+  "acceptance_criteria",
+  "external_confirmations",
+  "deliverables",
+  "branch_contribution",
+  "suggested_new_branches",
+]);
+
+function parseReviewDocument(value: unknown, index: number): ReviewDocument {
+  const path = `data.reviewDocuments[${index}]`;
+  const record = expectRecord(value, path);
+  if (
+    record.entrySource !== "floating_panel" &&
+    record.entrySource !== "side_panel" &&
+    record.entrySource !== "node_menu"
+  ) {
+    throw new BackupValidationError(`${path}.entrySource 无效。`);
+  }
+  const document: ReviewDocument = {
+    id: expectId(record.id, `${path}.id`),
+    projectId: expectId(record.projectId, `${path}.projectId`),
+    chatId: expectId(record.chatId, `${path}.chatId`),
+    scopeFamilyKey: expectString(record.scopeFamilyKey, `${path}.scopeFamilyKey`),
+    entrySource: record.entrySource,
+    createdAt: expectTimestamp(record.createdAt, `${path}.createdAt`),
+    updatedAt: expectTimestamp(record.updatedAt, `${path}.updatedAt`),
+  };
+  const activeVersionId = optionalId(record.activeVersionId, `${path}.activeVersionId`);
+  const graphAnchorNodeId = optionalId(record.graphAnchorNodeId, `${path}.graphAnchorNodeId`);
+  const supersedesDocumentId = optionalId(
+    record.supersedesDocumentId,
+    `${path}.supersedesDocumentId`,
+  );
+  if (activeVersionId) document.activeVersionId = activeVersionId;
+  if (graphAnchorNodeId) document.graphAnchorNodeId = graphAnchorNodeId;
+  if (supersedesDocumentId) document.supersedesDocumentId = supersedesDocumentId;
+  if (record.savedAt !== undefined) {
+    document.savedAt = expectTimestamp(record.savedAt, `${path}.savedAt`);
+  }
+  return document;
+}
+
+function parseReviewVersion(value: unknown, index: number): ReviewVersion {
+  const path = `data.reviewVersions[${index}]`;
+  const record = expectRecord(value, path);
+  const versionNumber = expectPositiveInteger(record.version, `${path}.version`);
+  const moduleOrder = expectArray(record.moduleOrder, `${path}.moduleOrder`).map(
+    (moduleId, moduleIndex) => parseReviewModuleId(moduleId, `${path}.moduleOrder[${moduleIndex}]`),
+  );
+  const version: ReviewVersion = {
+    id: expectId(record.id, `${path}.id`),
+    documentId: expectId(record.documentId, `${path}.documentId`),
+    projectId: expectId(record.projectId, `${path}.projectId`),
+    version: versionNumber,
+    title: expectString(record.title, `${path}.title`),
+    scope: parseReviewScope(record.scope, `${path}.scope`),
+    moduleOrder,
+    modules: expectArray(record.modules, `${path}.modules`).map((module, moduleIndex) =>
+      parseReviewModule(module, `${path}.modules[${moduleIndex}]`)
+    ),
+    evidences: expectArray(record.evidences, `${path}.evidences`).map((evidence, evidenceIndex) =>
+      parseReviewEvidence(evidence, `${path}.evidences[${evidenceIndex}]`)
+    ),
+    segmented: expectBoolean(record.segmented, `${path}.segmented`),
+    segmentCount: expectNonNegativeInteger(record.segmentCount, `${path}.segmentCount`),
+    missingRanges: expectArray(record.missingRanges, `${path}.missingRanges`).map(
+      (item, itemIndex) => expectString(item, `${path}.missingRanges[${itemIndex}]`),
+    ),
+    generatedAt: expectTimestamp(record.generatedAt, `${path}.generatedAt`),
+    updatedAt: expectTimestamp(record.updatedAt, `${path}.updatedAt`),
+  };
+  if (record.providerId !== undefined) {
+    if (!isAIProviderId(record.providerId)) {
+      throw new BackupValidationError(`${path}.providerId 无效。`);
+    }
+    version.providerId = record.providerId;
+  }
+  const model = optionalString(record.model, `${path}.model`);
+  if (model) version.model = model;
+  if (record.helpful !== undefined) version.helpful = expectBoolean(record.helpful, `${path}.helpful`);
+  if (record.moduleFeedback !== undefined) {
+    const feedbackRecord = expectRecord(record.moduleFeedback, `${path}.moduleFeedback`);
+    const feedback: ReviewVersion["moduleFeedback"] = {};
+    for (const [key, feedbackValue] of Object.entries(feedbackRecord)) {
+      const moduleId = parseReviewModuleId(key, `${path}.moduleFeedback.${key}`);
+      feedback[moduleId] = expectString(feedbackValue, `${path}.moduleFeedback.${key}`);
+    }
+    version.moduleFeedback = feedback;
+  }
+  return version;
+}
+
+function parseReviewScope(value: unknown, path: string): ReviewScope {
+  const record = expectRecord(value, path);
+  if (
+    record.type !== "current_branch" &&
+    record.type !== "conversation" &&
+    record.type !== "node_context"
+  ) {
+    throw new BackupValidationError(`${path}.type 无效。`);
+  }
+  if (record.completeness !== "complete" && record.completeness !== "partial") {
+    throw new BackupValidationError(`${path}.completeness 无效。`);
+  }
+  const scope: ReviewScope = {
+    type: record.type,
+    chatId: expectId(record.chatId, `${path}.chatId`),
+    nodeIds: parseIdArray(record.nodeIds, `${path}.nodeIds`),
+    messageSourceIds: expectArray(record.messageSourceIds, `${path}.messageSourceIds`).map(
+      (sourceId, index) => expectString(sourceId, `${path}.messageSourceIds[${index}]`),
+    ),
+    messageCount: expectNonNegativeInteger(record.messageCount, `${path}.messageCount`),
+    nodeCount: expectNonNegativeInteger(record.nodeCount, `${path}.nodeCount`),
+    includesOtherBranches: expectBoolean(
+      record.includesOtherBranches,
+      `${path}.includesOtherBranches`,
+    ),
+    completeness: record.completeness,
+    missingSourceIds: expectArray(record.missingSourceIds, `${path}.missingSourceIds`).map(
+      (sourceId, index) => expectString(sourceId, `${path}.missingSourceIds[${index}]`),
+    ),
+    estimatedTokens: expectNonNegativeInteger(record.estimatedTokens, `${path}.estimatedTokens`),
+    sourceSnapshotHash: expectString(record.sourceSnapshotHash, `${path}.sourceSnapshotHash`),
+  };
+  const anchorNodeId = optionalId(record.anchorNodeId, `${path}.anchorNodeId`);
+  const rootNodeId = optionalId(record.rootNodeId, `${path}.rootNodeId`);
+  if (anchorNodeId) scope.anchorNodeId = anchorNodeId;
+  if (rootNodeId) scope.rootNodeId = rootNodeId;
+  return scope;
+}
+
+function parseReviewModule(value: unknown, path: string): ReviewModuleResult {
+  const record = expectRecord(value, path);
+  if (
+    record.state !== "queued" &&
+    record.state !== "generating" &&
+    record.state !== "completed" &&
+    record.state !== "empty" &&
+    record.state !== "failed"
+  ) {
+    throw new BackupValidationError(`${path}.state 无效。`);
+  }
+  const editHistory = expectArray(record.editHistory, `${path}.editHistory`);
+  if (editHistory.length > 20) throw new BackupValidationError(`${path}.editHistory 超过 20 条限制。`);
+  const module: ReviewModuleResult = {
+    moduleId: parseReviewModuleId(record.moduleId, `${path}.moduleId`),
+    state: record.state,
+    generated: parseReviewModuleSnapshot(record.generated, `${path}.generated`),
+    current: parseReviewModuleSnapshot(record.current, `${path}.current`),
+    editHistory: editHistory.map((snapshot, index) =>
+      parseReviewModuleSnapshot(snapshot, `${path}.editHistory[${index}]`)
+    ),
+  };
+  if (record.editedAt !== undefined) module.editedAt = expectTimestamp(record.editedAt, `${path}.editedAt`);
+  const error = optionalString(record.error, `${path}.error`);
+  if (error) module.error = error;
+  return module;
+}
+
+function parseReviewModuleSnapshot(value: unknown, path: string): ReviewModuleSnapshot {
+  const record = expectRecord(value, path);
+  const snapshot: ReviewModuleSnapshot = {
+    overview: expectText(record.overview, `${path}.overview`),
+    items: expectArray(record.items, `${path}.items`).map((item, index) =>
+      parseReviewItem(item, `${path}.items[${index}]`)
+    ),
+  };
+  if (record.branchCandidates !== undefined) {
+    snapshot.branchCandidates = expectArray(record.branchCandidates, `${path}.branchCandidates`).map(
+      (candidate, index) => {
+        const candidatePath = `${path}.branchCandidates[${index}]`;
+        const candidateRecord = expectRecord(candidate, candidatePath);
+        const sourceNodeId = optionalId(candidateRecord.sourceNodeId, `${candidatePath}.sourceNodeId`);
+        return {
+          id: expectId(candidateRecord.id, `${candidatePath}.id`),
+          title: expectString(candidateRecord.title, `${candidatePath}.title`),
+          rationale: expectString(candidateRecord.rationale, `${candidatePath}.rationale`),
+          firstQuestion: expectString(candidateRecord.firstQuestion, `${candidatePath}.firstQuestion`),
+          ...(sourceNodeId ? { sourceNodeId } : {}),
+        };
+      },
+    );
+  }
+  return snapshot;
+}
+
+function parseReviewItem(value: unknown, path: string): ReviewItem {
+  const record = expectRecord(value, path);
+  const status = record.status;
+  if (
+    status !== undefined &&
+    status !== "confirmed" &&
+    status !== "user_decision" &&
+    status !== "consensus" &&
+    status !== "assistant_suggestion" &&
+    status !== "tentative" &&
+    status !== "unresolved" &&
+    status !== "deferred" &&
+    status !== "rejected"
+  ) {
+    throw new BackupValidationError(`${path}.status 无效。`);
+  }
+  return {
+    id: expectId(record.id, `${path}.id`),
+    text: expectString(record.text, `${path}.text`),
+    ...(status ? { status } : {}),
+    isInference: expectBoolean(record.isInference, `${path}.isInference`),
+    ...(record.isUserEdited !== undefined
+      ? { isUserEdited: expectBoolean(record.isUserEdited, `${path}.isUserEdited`) }
+      : {}),
+    evidenceIds: parseIdArray(record.evidenceIds, `${path}.evidenceIds`),
+  };
+}
+
+function parseReviewEvidence(value: unknown, path: string): ReviewEvidence {
+  const record = expectRecord(value, path);
+  if (record.role !== "user" && record.role !== "assistant") {
+    throw new BackupValidationError(`${path}.role 无效。`);
+  }
+  const excerpt = expectString(record.excerpt, `${path}.excerpt`);
+  if (Array.from(excerpt).length > 240) {
+    throw new BackupValidationError(`${path}.excerpt 超过 240 字限制。`);
+  }
+  const evidence: ReviewEvidence = {
+    id: expectId(record.id, `${path}.id`),
+    sourceId: expectString(record.sourceId, `${path}.sourceId`),
+    chatId: expectId(record.chatId, `${path}.chatId`),
+    role: record.role,
+    excerpt,
+    ordinal: expectNonNegativeInteger(record.ordinal, `${path}.ordinal`),
+    locator: parseReferenceLocator(record.locator, `${path}.locator`),
+  };
+  const nodeId = optionalId(record.nodeId, `${path}.nodeId`);
+  if (nodeId) evidence.nodeId = nodeId;
+  if (record.branchPath !== undefined) evidence.branchPath = parseIdArray(record.branchPath, `${path}.branchPath`);
+  return evidence;
+}
+
+function parseReviewModuleId(value: unknown, path: string): ReviewModuleId {
+  if (typeof value !== "string" || !REVIEW_MODULE_IDS.has(value as ReviewModuleId)) {
+    throw new BackupValidationError(`${path} 无效。`);
+  }
+  return value as ReviewModuleId;
 }
 
 function parseMessageLocator(value: unknown, path: string): NonNullable<QuestionNode["messageLocator"]> {
@@ -358,6 +863,175 @@ function validateBackupRelationships(backup: DiscussionBackup): void {
       throw new BackupValidationError(`事件 ${event.id} 引用了不存在的项目或节点。`);
     }
   }
+
+  assertUniqueIds(backup.data.reviewDocuments, "总结");
+  assertUniqueIds(backup.data.reviewVersions, "总结版本");
+  const documents = new Map(backup.data.reviewDocuments.map((document) => [document.id, document]));
+  const versions = new Map(backup.data.reviewVersions.map((version) => [version.id, version]));
+  for (const node of backup.data.nodes) {
+    if (
+      node.plannedFromReviewId
+      && documents.get(node.plannedFromReviewId)?.projectId !== node.projectId
+    ) {
+      throw new BackupValidationError(`计划节点 ${node.id} 的来源总结无效。`);
+    }
+  }
+  for (const document of backup.data.reviewDocuments) {
+    if (!projects.has(document.projectId)) {
+      throw new BackupValidationError(`总结 ${document.id} 引用了不存在的项目。`);
+    }
+    if (document.activeVersionId && versions.get(document.activeVersionId)?.documentId !== document.id) {
+      throw new BackupValidationError(`总结 ${document.id} 的当前版本无效。`);
+    }
+    const graphAnchor = document.graphAnchorNodeId
+      ? nodes.get(document.graphAnchorNodeId)
+      : undefined;
+    if (graphAnchor && graphAnchor.projectId !== document.projectId) {
+      throw new BackupValidationError(`总结 ${document.id} 的图锚点无效。`);
+    }
+    if (
+      document.supersedesDocumentId &&
+      documents.get(document.supersedesDocumentId)?.projectId !== document.projectId
+    ) {
+      throw new BackupValidationError(`总结 ${document.id} 的前序总结无效。`);
+    }
+  }
+  const versionNumbers = new Set<string>();
+  for (const version of backup.data.reviewVersions) {
+    if (
+      !projects.has(version.projectId) ||
+      documents.get(version.documentId)?.projectId !== version.projectId
+    ) {
+      throw new BackupValidationError(`总结版本 ${version.id} 引用了不存在的总结或项目。`);
+    }
+    const versionKey = `${version.documentId}:${version.version}`;
+    if (versionNumbers.has(versionKey)) {
+      throw new BackupValidationError(`总结 ${version.documentId} 存在重复版本号。`);
+    }
+    versionNumbers.add(versionKey);
+    const scopeNodeIds = new Set(version.scope.nodeIds);
+    for (const nodeId of scopeNodeIds) {
+      const scopeNode = nodes.get(nodeId);
+      if (scopeNode && scopeNode.projectId !== version.projectId) {
+        throw new BackupValidationError(`总结版本 ${version.id} 的范围节点无效。`);
+      }
+    }
+    for (const nodeId of [version.scope.anchorNodeId, version.scope.rootNodeId]) {
+      const scopeAnchor = nodeId ? nodes.get(nodeId) : undefined;
+      if (scopeAnchor && scopeAnchor.projectId !== version.projectId) {
+        throw new BackupValidationError(`总结版本 ${version.id} 的范围锚点无效。`);
+      }
+    }
+    const evidenceIds = new Set(version.evidences.map((evidence) => evidence.id));
+    if (evidenceIds.size !== version.evidences.length) {
+      throw new BackupValidationError(`总结版本 ${version.id} 存在重复证据 ID。`);
+    }
+    const moduleIds = new Set(version.modules.map((module) => module.moduleId));
+    if (moduleIds.size !== version.modules.length) {
+      throw new BackupValidationError(`总结版本 ${version.id} 存在重复模块。`);
+    }
+    if (version.moduleOrder.some((moduleId) => !moduleIds.has(moduleId))) {
+      throw new BackupValidationError(`总结版本 ${version.id} 的模块目录无效。`);
+    }
+    for (const evidence of version.evidences) {
+      const evidenceNode = evidence.nodeId ? nodes.get(evidence.nodeId) : undefined;
+      if (evidenceNode && evidenceNode.projectId !== version.projectId) {
+        throw new BackupValidationError(`总结版本 ${version.id} 的证据节点无效。`);
+      }
+      if (evidence.branchPath?.some((nodeId) => {
+        const branchNode = nodes.get(nodeId);
+        return branchNode !== undefined && branchNode.projectId !== version.projectId;
+      })) {
+        throw new BackupValidationError(`总结版本 ${version.id} 的证据路径无效。`);
+      }
+    }
+    for (const module of version.modules) {
+      for (const snapshot of [module.generated, module.current, ...module.editHistory]) {
+        if (snapshot.items.some((item) => item.evidenceIds.some((id) => !evidenceIds.has(id)))) {
+          throw new BackupValidationError(`总结版本 ${version.id} 的模块证据引用无效。`);
+        }
+        if (snapshot.branchCandidates?.some((candidate) => {
+          if (candidate.sourceNodeId === undefined) return false;
+          const sourceNode = nodes.get(candidate.sourceNodeId);
+          return sourceNode !== undefined && (
+            sourceNode.projectId !== version.projectId
+            || !scopeNodeIds.has(candidate.sourceNodeId)
+          );
+        })) {
+          throw new BackupValidationError(`总结版本 ${version.id} 的建议分支来源无效。`);
+        }
+      }
+    }
+  }
+}
+
+function mapImportedReviewScope(
+  scope: ReviewScope,
+  nodeIds: Map<string, string>,
+): ReviewScope {
+  const mapped: ReviewScope = {
+    ...scope,
+    nodeIds: scope.nodeIds.flatMap((id) => nodeIds.get(id) ?? []),
+  };
+  if (scope.anchorNodeId) {
+    const anchorNodeId = nodeIds.get(scope.anchorNodeId);
+    if (anchorNodeId) mapped.anchorNodeId = anchorNodeId;
+    else delete mapped.anchorNodeId;
+  }
+  if (scope.rootNodeId) {
+    const rootNodeId = nodeIds.get(scope.rootNodeId);
+    if (rootNodeId) mapped.rootNodeId = rootNodeId;
+    else delete mapped.rootNodeId;
+  }
+  mapped.nodeCount = mapped.nodeIds.length;
+  return mapped;
+}
+
+function mapImportedReviewEvidence(
+  evidence: ReviewEvidence,
+  nodeIds: Map<string, string>,
+): ReviewEvidence {
+  const mapped: ReviewEvidence = {
+    id: evidence.id,
+    sourceId: evidence.sourceId,
+    chatId: evidence.chatId,
+    role: evidence.role,
+    excerpt: evidence.excerpt,
+    ordinal: evidence.ordinal,
+    locator: evidence.locator,
+  };
+  if (evidence.nodeId && nodeIds.has(evidence.nodeId)) mapped.nodeId = nodeIds.get(evidence.nodeId)!;
+  if (evidence.branchPath) mapped.branchPath = evidence.branchPath.flatMap((id) => nodeIds.get(id) ?? []);
+  return mapped;
+}
+
+function mapImportedReviewModule(
+  module: ReviewModuleResult,
+  nodeIds: Map<string, string>,
+): ReviewModuleResult {
+  return {
+    ...module,
+    generated: mapImportedReviewSnapshot(module.generated, nodeIds),
+    current: mapImportedReviewSnapshot(module.current, nodeIds),
+    editHistory: module.editHistory.map((snapshot) => mapImportedReviewSnapshot(snapshot, nodeIds)),
+  };
+}
+
+function mapImportedReviewSnapshot(
+  snapshot: ReviewModuleSnapshot,
+  nodeIds: Map<string, string>,
+): ReviewModuleSnapshot {
+  if (!snapshot.branchCandidates) return snapshot;
+  return {
+    ...snapshot,
+    branchCandidates: snapshot.branchCandidates.map((candidate) => {
+      if (!candidate.sourceNodeId || !nodeIds.has(candidate.sourceNodeId)) {
+        const { sourceNodeId: _sourceNodeId, ...rest } = candidate;
+        return rest;
+      }
+      return { ...candidate, sourceNodeId: nodeIds.get(candidate.sourceNodeId)! };
+    }),
+  };
 }
 
 function assertAcyclicNodes(nodes: QuestionNode[], nodeById: Map<string, QuestionNode>): void {
@@ -430,6 +1104,33 @@ function expectString(value: unknown, path: string): string {
   return value;
 }
 
+function expectText(value: unknown, path: string): string {
+  if (typeof value !== "string") throw new BackupValidationError(`${path} 必须是文本。`);
+  return value;
+}
+
+function expectBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") throw new BackupValidationError(`${path} 必须是布尔值。`);
+  return value;
+}
+
+function expectNonNegativeInteger(value: unknown, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new BackupValidationError(`${path} 必须是非负整数。`);
+  }
+  return value as number;
+}
+
+function expectPositiveInteger(value: unknown, path: string): number {
+  const result = expectNonNegativeInteger(value, path);
+  if (result < 1) throw new BackupValidationError(`${path} 必须是正整数。`);
+  return result;
+}
+
+function parseIdArray(value: unknown, path: string): string[] {
+  return expectArray(value, path).map((item, index) => expectId(item, `${path}[${index}]`));
+}
+
 function optionalString(value: unknown, path: string): string | undefined {
   if (value === undefined) return undefined;
   return expectString(value, path);
@@ -454,6 +1155,14 @@ function nullableId(value: unknown, path: string): string | null {
 function expectTimestamp(value: unknown, path: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new BackupValidationError(`${path} 必须是有效时间戳。`);
+  }
+  return value;
+}
+
+function optionalNonNegativeNumber(value: unknown, path: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new BackupValidationError(`${path} 必须是非负数。`);
   }
   return value;
 }

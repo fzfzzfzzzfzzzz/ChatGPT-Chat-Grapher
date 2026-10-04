@@ -1,5 +1,5 @@
 import type { DiscussionMapDatabase } from "../database";
-import type { QuestionNode } from "../../types/domain";
+import type { CapturedQuestion, QuestionNode } from "../../types/domain";
 import { createId } from "../../utils/id";
 import { requireText } from "../../utils/text";
 
@@ -70,6 +70,24 @@ export class NodeRepository {
   ): Promise<QuestionNode> {
     const updated = await this.database.nodes.update(id, { ...changes, updatedAt: Date.now() });
     if (!updated) throw new Error("Question node not found.");
+    return (await this.database.nodes.get(id))!;
+  }
+
+  async realizePlanned(id: string, captured: CapturedQuestion): Promise<QuestionNode> {
+    const existing = await this.database.nodes.get(id);
+    if (!existing || existing.kind !== "planned") {
+      throw new Error("Planned question node not found.");
+    }
+    const updated = await this.database.nodes.update(id, {
+      kind: "captured",
+      chatId: captured.chatId,
+      messageId: captured.messageId,
+      ...(captured.messageAnchor ? { messageAnchor: captured.messageAnchor } : {}),
+      ...(captured.messageLocator ? { messageLocator: captured.messageLocator } : {}),
+      ...(captured.references?.length ? { references: captured.references } : {}),
+      updatedAt: Date.now(),
+    });
+    if (!updated) throw new Error("Planned question node not found.");
     return (await this.database.nodes.get(id))!;
   }
 

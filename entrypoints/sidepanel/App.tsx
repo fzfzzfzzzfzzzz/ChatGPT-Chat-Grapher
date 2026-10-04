@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { browser } from "wxt/browser";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { ChangeParentDialog } from "../../components/ChangeParentDialog";
+import { ConversationReviewDialog } from "../../components/ConversationReviewDialog";
 import { CurrentParentPanel } from "../../components/CurrentParentPanel";
 import { EmptyState } from "../../components/EmptyState";
 import { InboxPanel } from "../../components/InboxPanel";
@@ -21,6 +23,7 @@ import { ProjectSearchPanel } from "../../components/ProjectSearchPanel";
 import { QuestionDetailDialog } from "../../components/QuestionDetailDialog";
 import { SettingsModal } from "../../components/SettingsModal";
 import { SidePanelLayout } from "../../components/SidePanelLayout";
+import { useConversationReview } from "../../components/useConversationReview";
 import {
   MAX_BACKUP_FILE_BYTES,
   createDiscussionBackup,
@@ -32,6 +35,7 @@ import {
 } from "../../db/backup";
 import { db } from "../../db/database";
 import { DiscussionService } from "../../graph/discussionService";
+import { buildReviewGraphArtifacts } from "../../graph/reviewArtifacts";
 import { getCurrentPath } from "../../graph/questionTree";
 import { openFloatingPanelInActiveTab } from "../../platform/floatingPanel";
 import {
@@ -43,9 +47,17 @@ import {
   getAISettings,
   saveAISettings,
 } from "../../settings/storage";
+import {
+  DEFAULT_GRAPH_DISPLAY_MODE,
+  SIDE_PANEL_GRAPH_DISPLAY_MODE_KEY,
+  graphDisplayModeFromStorage,
+  type GraphDisplayMode,
+} from "../../shared/graphDisplayMode";
+import { collectReviewSourceFromActiveTab } from "../../review/runtime";
 import type {
   ExtensionMessage,
   NavigateToNodeResponse,
+  ReviewMutationResponse,
   TestAIProviderResponse,
 } from "../../shared/messages";
 import {
@@ -59,6 +71,7 @@ import type {
   QuestionCandidate,
   QuestionNode,
 } from "../../types/domain";
+import "../../components/conversationReview.css";
 
 const service = new DiscussionService(db);
 const GraphView = lazy(() =>
@@ -89,10 +102,14 @@ function messageFromError(error: unknown): string {
 
 export default function App() {
   const [view, setView] = useState<View>("focus");
+  const [graphDisplayMode, setGraphDisplayMode] = useState<GraphDisplayMode>(
+    DEFAULT_GRAPH_DISPLAY_MODE,
+  );
   const [selectionReady, setSelectionReady] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [projectDialog, setProjectDialog] = useState<{ project?: Project } | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string>();
+  const [parentEditingNodeId, setParentEditingNodeId] = useState<string>();
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiSettings, setAISettings] = useState<AISettings>(DEFAULT_AI_SETTINGS);
@@ -114,6 +131,20 @@ export default function App() {
     [selectedProjectId],
     [],
   );
+  const reviewDocuments = useLiveQuery(
+    () => selectedProjectId
+      ? service.reviews.listDocumentsForProject(selectedProjectId)
+      : Promise.resolve([]),
+    [selectedProjectId],
+    [],
+  );
+  const reviewVersions = useLiveQuery(
+    () => selectedProjectId
+      ? db.reviewVersions.where("projectId").equals(selectedProjectId).toArray()
+      : Promise.resolve<import("../../types/domain").ReviewVersion[]>([]),
+    [selectedProjectId],
+    [],
+  );
   const latestAutoLink = useLiveQuery(
     () => selectedProjectId
       ? service.events.latestUndoableAutoLink(selectedProjectId)
@@ -131,8 +162,23 @@ export default function App() {
     ? nodes.find((node) => node.id === focusNode.parentId)
     : undefined;
   const detailNode = nodes.find((node) => node.id === detailNodeId);
+  const parentEditingNode = nodes.find((node) => node.id === parentEditingNodeId);
   const linkedNode = nodes.find((node) => node.id === latestAutoLink?.nodeId);
   const linkedParent = nodes.find((node) => node.id === latestAutoLink?.afterParentId);
+  const reviewArtifacts = useMemo(
+    () => buildReviewGraphArtifacts(reviewDocuments, reviewVersions, nodes),
+    [nodes, reviewDocuments, reviewVersions],
+  );
+  const reviewController = useConversationReview({
+    ...(selectedProjectId ? { projectId: selectedProjectId } : {}),
+    nodes,
+    entrySource: "side_panel",
+    ...(focusNode ? { defaultAnchorNodeId: focusNode.id } : {}),
+    collectSource: collectReviewSourceFromActiveTab,
+    onError: setError,
+    onChanged: announceChange,
+    onOpenSettings: () => setSettingsOpen(true),
+  });
 
   useEffect(() => {
     void getAISettings().then(setAISettings);
@@ -157,6 +203,11 @@ export default function App() {
         setView("focus");
       }
 
+      const graphDisplayModeChange = changes[SIDE_PANEL_GRAPH_DISPLAY_MODE_KEY];
+      if (graphDisplayModeChange) {
+        setGraphDisplayMode(graphDisplayModeFromStorage(graphDisplayModeChange.newValue));
+      }
+
       if (changes[REQUESTED_SIDE_PANEL_VIEW_KEY]?.newValue === "graph") {
         setView("graph");
         void browser.storage.local.remove(REQUESTED_SIDE_PANEL_VIEW_KEY);
@@ -165,7 +216,11 @@ export default function App() {
 
     browser.storage.onChanged.addListener(handleStorageChanged);
     void browser.storage.local
-      .get([SELECTED_PROJECT_KEY, REQUESTED_SIDE_PANEL_VIEW_KEY])
+      .get([
+        SELECTED_PROJECT_KEY,
+        REQUESTED_SIDE_PANEL_VIEW_KEY,
+        SIDE_PANEL_GRAPH_DISPLAY_MODE_KEY,
+      ])
       .then((stored) => {
         if (disposed) return;
         const storedId = stored[SELECTED_PROJECT_KEY];
@@ -176,6 +231,9 @@ export default function App() {
         if (stored[REQUESTED_SIDE_PANEL_VIEW_KEY] !== undefined) {
           void browser.storage.local.remove(REQUESTED_SIDE_PANEL_VIEW_KEY);
         }
+        setGraphDisplayMode(
+          graphDisplayModeFromStorage(stored[SIDE_PANEL_GRAPH_DISPLAY_MODE_KEY]),
+        );
       })
       .finally(() => {
         if (!disposed) setSelectionReady(true);
@@ -225,13 +283,24 @@ export default function App() {
   async function selectProject(projectId: string): Promise<void> {
     setSelectedProjectId(projectId);
     setDetailNodeId(undefined);
+    setParentEditingNodeId(undefined);
     setConfirmingNavigationNode(undefined);
     setView("focus");
     await persistSelectedProject(projectId);
     await announceChange();
   }
 
+  function selectGraphDisplayMode(mode: GraphDisplayMode): void {
+    setGraphDisplayMode(mode);
+    void browser.storage.local.set({ [SIDE_PANEL_GRAPH_DISPLAY_MODE_KEY]: mode });
+  }
+
   async function locateNode(node: QuestionNode): Promise<void> {
+    if (node.kind === "planned") {
+      setDetailNodeId(node.id);
+      setError(undefined);
+      return;
+    }
     setError(undefined);
     setNavigationBusy(true);
     try {
@@ -256,7 +325,17 @@ export default function App() {
       title: "删除整个项目？",
       body: `“${project.title}”下的问题图与待讨论问题会从本机删除。此操作不可撤销。`,
       onConfirm: async () => {
-        if (await execute(() => service.deleteProject(project.id))) {
+        if (await execute(async () => {
+          await browser.runtime.sendMessage({
+            type: "CANCEL_PROJECT_REVIEWS",
+            projectId: project.id,
+          } satisfies ExtensionMessage).catch(() => undefined);
+          await service.deleteProject(project.id);
+          await browser.runtime.sendMessage({
+            type: "CANCEL_PROJECT_REVIEWS",
+            projectId: project.id,
+          } satisfies ExtensionMessage).catch(() => undefined);
+        })) {
           setConfirm(null);
           setSelectedProjectId(undefined);
           await persistSelectedProject(undefined);
@@ -285,6 +364,24 @@ export default function App() {
     });
   }
 
+  async function locateReference(reference: NonNullable<QuestionNode["references"]>[number]): Promise<void> {
+    setError(undefined);
+    setNavigationBusy(true);
+    try {
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+      const response = await browser.runtime.sendMessage({
+        type: "NAVIGATE_TO_REFERENCE",
+        reference,
+        ...(tab?.id !== undefined ? { sourceTabId: tab.id } : {}),
+      } satisfies ExtensionMessage) as NavigateToNodeResponse;
+      if (!response.ok) setError(response.error);
+    } catch (actionError) {
+      setError(messageFromError(actionError));
+    } finally {
+      setNavigationBusy(false);
+    }
+  }
+
   async function openFloatingPanel(): Promise<void> {
     setError(undefined);
     try {
@@ -305,12 +402,14 @@ export default function App() {
       projectCount: backup.data.projects.length,
       nodeCount: backup.data.nodes.length,
       candidateCount: backup.data.candidates.length,
+      reviewDocumentCount: backup.data.reviewDocuments.length,
+      reviewVersionCount: backup.data.reviewVersions.length,
     };
   }
 
   async function importData(file: File): Promise<BackupImportResult> {
     if (file.size > MAX_BACKUP_FILE_BYTES) {
-      throw new Error("备份文件不能超过 10 MB。");
+      throw new Error("备份文件不能超过 50 MB。");
     }
     const backup = parseDiscussionBackupJson(await file.text());
     const result = await importDiscussionBackup(db, backup);
@@ -329,6 +428,7 @@ export default function App() {
       onEdit={() => selectedProject && setProjectDialog({ project: selectedProject })}
       onDelete={() => selectedProject && requestProjectDelete(selectedProject)}
       onOpenFloatingPanel={() => void openFloatingPanel()}
+      onReview={() => reviewController.openReview()}
       onSettings={() => setSettingsOpen(true)}
     />
   );
@@ -378,7 +478,7 @@ export default function App() {
                     current={focusNode}
                     {...(parentNode ? { parent: parentNode } : {})}
                     onEdit={() => setDetailNodeId(focusNode.id)}
-                    onLocate={() => void locateNode(focusNode)}
+                    {...(focusNode.kind === "planned" ? {} : { onLocate: () => void locateNode(focusNode) })}
                     onSetStatus={(status) => void execute(() => service.setStatus(focusNode.id, status))}
                   />
 
@@ -443,11 +543,40 @@ export default function App() {
                 <GraphView
                   questions={nodes}
                   {...(focusNode ? { focusId: focusNode.id } : {})}
+                  displayMode={graphDisplayMode}
+                  onDisplayModeChange={selectGraphDisplayMode}
                   onMakeCurrent={(node) => void execute(() => service.focusNode(node.id))}
                   onViewDetails={(node) => setDetailNodeId(node.id)}
+                  onChangeParent={(node) => setParentEditingNodeId(node.id)}
                   onRequestLocate={setConfirmingNavigationNode}
                   onRequestDelete={(node, deleteDescendants) => requestNodeDelete(node, deleteDescendants)}
                   onSetStatus={(node, status) => execute(() => service.setStatus(node.id, status))}
+                  onSummarizeNode={(node) => reviewController.openReview({
+                    anchorNodeId: node.id,
+                    entrySource: "node_menu",
+                    scopeType: "node_context",
+                  })}
+                  reviews={reviewArtifacts}
+                  onOpenReview={(artifact) => reviewController.openReview({
+                    anchorNodeId: artifact.graphAnchorNodeId,
+                    documentId: artifact.document.id,
+                  })}
+                  onDeleteReview={(artifact) => setConfirm({
+                    title: "删除这个总结？",
+                    body: `“${artifact.version.title}”及其全部历史版本会从本机删除，此操作不可撤销。`,
+                    onConfirm: async () => {
+                      if (await execute(async () => {
+                        const response = await browser.runtime.sendMessage({
+                          type: "DELETE_REVIEW_DOCUMENT",
+                          documentId: artifact.document.id,
+                        } satisfies ExtensionMessage) as ReviewMutationResponse;
+                        if (!response.ok) throw new Error(response.error);
+                      })) {
+                        setConfirm(null);
+                        await announceChange();
+                      }
+                    },
+                  })}
                 />
               </Suspense>
             ) : <p className="muted-empty">发送第一个问题后，这里会显示问题图。</p>
@@ -485,7 +614,19 @@ export default function App() {
           onSave={(input) => execute(() => service.updateNode(detailNode.id, input))}
           onFocus={() => execute(() => service.focusNode(detailNode.id)).then(() => undefined)}
           onLocate={() => locateNode(detailNode)}
+          onLocateReference={locateReference}
           onDelete={() => requestNodeDelete(detailNode)}
+        />
+      ) : null}
+
+      {parentEditingNode ? (
+        <ChangeParentDialog
+          node={parentEditingNode}
+          nodes={nodes}
+          onClose={() => setParentEditingNodeId(undefined)}
+          onSave={(parentId) => execute(() =>
+            service.changeParent(parentEditingNode.id, parentId, "user"),
+          )}
         />
       ) : null}
 
@@ -532,6 +673,10 @@ export default function App() {
             await locateNode(node);
           }}
         />
+      ) : null}
+
+      {reviewController.dialogProps ? (
+        <ConversationReviewDialog {...reviewController.dialogProps} />
       ) : null}
 
     </SidePanelLayout>

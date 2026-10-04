@@ -38,6 +38,22 @@ describe("questionsToFlow", () => {
     expect(rootY).toBe((firstY + secondY) / 2);
   });
 
+  it("uses compact dot nodes and floating-panel spacing in node mode", () => {
+    const questions = [
+      question("root", null, 1),
+      question("child", "root", 2),
+    ];
+
+    const result = questionsToFlow(questions, "child", "nodes");
+    const byId = new Map(result.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get("child")!.position.x).toBe(byId.get("root")!.position.x + 68);
+    expect(byId.get("root")!.data.label).toBe("");
+    expect(byId.get("root")!.ariaLabel).toBe("root");
+    expect(byId.get("root")!.className).toBe("graph-flow-node--compact");
+    expect(byId.get("root")!.style?.borderRadius).toBe("50%");
+  });
+
   it("converts a 100-question forest to nodes and parent edges", () => {
     const now = Date.now();
     const questions: QuestionNode[] = Array.from({ length: 100 }, (_, index) => ({

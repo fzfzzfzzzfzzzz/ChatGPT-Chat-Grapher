@@ -19,26 +19,26 @@ export function ProjectSearchPanel({ nodes, onLocate }: Props) {
     <section className="project-search-panel">
       <label className="project-search-box">
         <Search size={15} aria-hidden="true" />
-        <span className="sr-only">搜索当前项目的问题和摘要</span>
+        <span className="sr-only">搜索当前项目的问题、摘要和引用</span>
         <input
           autoFocus
           type="search"
           value={query}
-          placeholder="搜索问题或摘要…"
+          placeholder="搜索问题、摘要或引用…"
           onChange={(event) => setQuery(event.target.value)}
         />
       </label>
       {!normalizedQuery ? (
-        <div className="search-empty">输入关键词，查找当前项目中的问题和摘要。</div>
+        <div className="search-empty">输入关键词，查找当前项目中的问题、摘要和引用。</div>
       ) : results.length ? (
         <div className="project-search-results" aria-live="polite">
           <div className="project-search-count">找到 {results.length} 个节点</div>
-          {results.map(({ node, field }) => {
+          {results.map(({ node, field, referenceText }) => {
             const ancestors = getCurrentPath(nodes, node.id).slice(0, -1);
             return (
               <button key={node.id} type="button" onClick={() => onLocate(node)}>
                 <div className="project-search-result__topline">
-                  <span>{field === "question" ? "问题命中" : "摘要命中"}</span>
+                  <span>{field === "question" ? "问题命中" : field === "summary" ? "摘要命中" : "引用命中"}</span>
                   <StatusPill status={node.status} />
                 </div>
                 {ancestors.length ? (
@@ -48,6 +48,11 @@ export function ProjectSearchPanel({ nodes, onLocate }: Props) {
                 ) : <div className="project-search-result__path">根节点</div>}
                 <h3>{highlightMatch(node.question, normalizedQuery)}</h3>
                 <p>{highlightMatch(node.summary, normalizedQuery)}</p>
+                {referenceText ? (
+                  <p className="project-search-result__reference">
+                    引用：{highlightMatch(referenceText, normalizedQuery)}
+                  </p>
+                ) : null}
               </button>
             );
           })}

@@ -165,6 +165,49 @@
   isolation: isolate;
 }
 
+.chat-graph-resize-handle {
+  position: absolute;
+  z-index: 4;
+  right: 2px;
+  bottom: 2px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 0 12px;
+  outline: 0;
+  color: var(--cg-text-muted);
+  background: transparent;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.chat-graph-resize-handle::before,
+.chat-graph-resize-handle::after {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  content: "";
+}
+
+.chat-graph-resize-handle::after {
+  right: 8px;
+  bottom: 8px;
+  width: 4px;
+  height: 4px;
+  opacity: 0.72;
+}
+
+.chat-graph-resize-handle:hover,
+.chat-graph-resize-handle:focus-visible {
+  color: var(--cg-accent);
+  background: var(--cg-accent-soft);
+}
+
 .chat-graph-header {
   display: flex;
   min-height: 50px;
@@ -662,6 +705,16 @@
   scrollbar-color: var(--cg-border) transparent;
 }
 
+.chat-graph-panel--user-sized .chat-graph-panel__body {
+  flex: 1 1 auto;
+}
+
+.chat-graph-panel--user-sized .chat-graph-panel__body--graph {
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+}
+
 .chat-graph-panel__body--current {
   padding-bottom: 12px;
 }
@@ -822,6 +875,13 @@
   padding: 10px 12px 12px;
 }
 
+.chat-graph-panel--user-sized .chat-graph-map {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .chat-graph-map__canvas {
   position: relative;
   height: 286px;
@@ -835,6 +895,12 @@
   cursor: grab;
   touch-action: none;
   user-select: none;
+}
+
+.chat-graph-panel--user-sized .chat-graph-map__canvas {
+  min-height: 0;
+  height: auto;
+  flex: 1 1 auto;
 }
 
 .chat-graph-map__canvas.is-panning {
@@ -958,6 +1024,23 @@
   stroke-width: 3;
 }
 
+.chat-graph-map-node.is-planned .chat-graph-map-node__dot {
+  fill: #f59e0b;
+  stroke: #fff7ed;
+  stroke-dasharray: 3 2;
+}
+
+.chat-graph-map-node.is-planned .chat-graph-map-node__focus-ring {
+  stroke: #d97706;
+  stroke-dasharray: 4 3;
+}
+
+.chat-graph-map-node.is-planned.is-current .chat-graph-map-node__focus-ring,
+.chat-graph-map-node.is-planned.is-selected .chat-graph-map-node__focus-ring {
+  fill: color-mix(in srgb, #f59e0b 18%, transparent);
+  stroke: #d97706;
+}
+
 .chat-graph-map-node:hover .chat-graph-map-node__focus-ring,
 .chat-graph-map-node:focus-visible .chat-graph-map-node__focus-ring {
   stroke: var(--cg-accent);
@@ -989,6 +1072,9 @@
 .chat-graph-map__tooltip.is-below {
   transform: translate(-50%, 12px);
 }
+
+.chat-graph-map__tooltip span { display: block; }
+.chat-graph-map__tooltip small { display: block; margin-top: 4px; color: var(--cg-accent); font-size: 9px; }
 
 .chat-graph-map__context-menu {
   position: absolute;
@@ -1487,6 +1573,19 @@ button.chat-graph-copy {
   line-height: 1.5;
 }
 
+.chat-graph-reference-summary {
+  width: fit-content;
+  margin-top: 6px;
+  padding: 3px 7px;
+  border: 1px solid var(--cg-border);
+  border-radius: 999px;
+  color: var(--cg-text-soft);
+  background: var(--cg-bg-subtle);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .chat-graph-inline-summary {
   margin-top: 9px;
   padding-top: 9px;
@@ -1862,12 +1961,12 @@ button.chat-graph-copy {
 @media (max-width: 720px) {
   .chat-graph-panel {
     top: 70px;
-    right: 10px;
+    right: 12px;
   }
 
   .chat-graph-panel--collapsed,
   .chat-graph-panel--working {
-    width: min(340px, calc(100vw - 20px));
+    width: min(340px, calc(100vw - 24px));
   }
 }
 

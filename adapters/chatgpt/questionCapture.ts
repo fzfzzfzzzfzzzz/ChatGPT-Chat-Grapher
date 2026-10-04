@@ -1,6 +1,12 @@
-import type { CapturedQuestion, MessageLocator } from "../../types/domain";
+import type {
+  CapturedQuestion,
+  MessageLocator,
+  QuestionReference,
+  ReferenceLocator,
+} from "../../types/domain";
 import type { LocateQuestionMethod, LocateQuestionResponse } from "../../shared/messages";
 import { getConversationMetaFromPage } from "./getConversation";
+import { extractQuestionReferences } from "./referenceCapture";
 import { CHATGPT_SELECTORS } from "./selectors";
 
 const TURN_CONTAINER_SELECTOR = "section[data-turn-id], article";
@@ -19,15 +25,17 @@ export function getCapturedQuestions(root: ParentNode = document): CapturedQuest
   if (!meta) return [];
 
   return messages.flatMap((element, ordinal) => {
-    const question = normalizeMessageText(element.innerText);
+    const question = messageQuestionText(element);
     if (!question) return [];
     const fingerprint = fingerprintMessageText(question);
     const messageAnchor = `user:${ordinal}:${fingerprint}`;
     const messageLocator = buildMessageLocator(element, ordinal, fingerprint);
+    const references = extractQuestionReferences(element, meta.chatId, messageLocator);
     return [{
       question,
       chatId: meta.chatId,
       messageId: messageLocator.messageId || messageLocator.turnId || messageAnchor,
+      ...(references.length ? { references } : {}),
       messageAnchor,
       messageLocator,
       ...(meta.conversationTitle ? { conversationTitle: meta.conversationTitle } : {}),
@@ -44,18 +52,20 @@ export function getCapturedQuestionFromElement(
   const meta = getConversationMetaFromPage();
   if (ordinal < 0 || !meta) return undefined;
 
-  const question = normalizeMessageText(element.innerText);
+  const question = messageQuestionText(element);
   if (!question) return undefined;
   const fingerprint = fingerprintMessageText(question);
   const messageAnchor = `user:${ordinal}:${fingerprint}`;
   const messageLocator = buildMessageLocator(element, ordinal, fingerprint);
   const assistantContext = getAssistantContextForQuestion(element, root);
+  const references = extractQuestionReferences(element, meta.chatId, messageLocator);
 
   return {
     question,
     chatId: meta.chatId,
     messageId: messageLocator.messageId || messageLocator.turnId || messageAnchor,
     ...(assistantContext ? { assistantContext } : {}),
+    ...(references.length ? { references } : {}),
     messageAnchor,
     messageLocator,
     ...(meta.conversationTitle ? { conversationTitle: meta.conversationTitle } : {}),
@@ -146,7 +156,7 @@ export function locateQuestionMessage(
   const messages = getUserMessages(root);
   const target = messages.find((element, index) =>
     index === anchor.ordinal &&
-    fingerprintMessageText(normalizeMessageText(element.innerText)) === anchor.fingerprint
+    fingerprintMessageText(messageQuestionText(element)) === anchor.fingerprint
   );
   return target ? revealQuestionMessage(target, "anchor") : undefined;
 }
@@ -350,6 +360,170 @@ export async function locateQuestionOnCurrentPage(
   };
 }
 
+export async function locateQuestionReferenceOnCurrentPage(
+  reference: QuestionReference & { sourceLocator: ReferenceLocator },
+  currentChatId: string | undefined,
+  root: ParentNode = document,
+): Promise<LocateQuestionResponse> {
+  const { sourceLocator } = reference;
+  if (!getAuthoredMessages(root, sourceLocator.role).length) {
+    return {
+      ok: false,
+      code: "CONVERSATION_UNAVAILABLE",
+      error: sourceLocator.role === "assistant"
+        ? "页面没有加载到对应的回答内容。"
+        : "页面没有加载到对应的问题内容。",
+    };
+  }
+  const method = await locateReferenceMessageWithHistory(reference, root);
+  if (method) return { ok: true, method };
+  if (currentChatId !== sourceLocator.chatId) {
+    return {
+      ok: false,
+      code: "WRONG_CONVERSATION",
+      error: "当前页面没有找到该引用来源。",
+    };
+  }
+  return {
+    ok: false,
+    code: "MESSAGE_NOT_FOUND",
+    error: "已扫描当前会话，但没有找到引用的原消息。",
+  };
+}
+
+function locateReferenceMessage(
+  reference: QuestionReference & { sourceLocator: ReferenceLocator },
+  root: ParentNode,
+): LocateQuestionMethod | undefined {
+  const { sourceLocator } = reference;
+  if (sourceLocator.messageId) {
+    const target = findAuthoredMessageByAttribute(
+      root,
+      sourceLocator.role,
+      "data-message-id",
+      sourceLocator.messageId,
+    );
+    if (target) return revealQuestionMessage(target, "messageId");
+  }
+  if (sourceLocator.turnId) {
+    const target = findAuthoredMessageByAttribute(
+      root,
+      sourceLocator.role,
+      "data-turn-id",
+      sourceLocator.turnId,
+    );
+    if (target) return revealQuestionMessage(target, "turnId");
+  }
+  const messages = getAuthoredMessages(root, sourceLocator.role);
+  if (sourceLocator.ordinal !== undefined) {
+    const target = messages[sourceLocator.ordinal];
+    if (target && matchesReferenceTarget(target, reference)) {
+      return revealQuestionMessage(target, "anchor");
+    }
+  }
+  const target = messages.find((message) => matchesReferenceTarget(message, reference));
+  return target ? revealQuestionMessage(target, "anchor") : undefined;
+}
+
+async function locateReferenceMessageWithHistory(
+  reference: QuestionReference & { sourceLocator: ReferenceLocator },
+  root: ParentNode,
+): Promise<LocateQuestionMethod | undefined> {
+  const immediate = locateReferenceMessage(reference, root);
+  if (immediate || typeof window === "undefined") return immediate;
+  const scrollContainer = findConversationScrollContainer(root);
+  if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight + 1) {
+    return undefined;
+  }
+  const originalScrollTop = scrollContainer.scrollTop;
+  const originalScrollableHeight = Math.max(1, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+  const originalScrollRatio = originalScrollTop / originalScrollableHeight;
+  let located: LocateQuestionMethod | undefined;
+  const scan = async (direction: -1 | 1) => {
+    let stalledSteps = 0;
+    for (let step = 0; step < HISTORY_SCAN_MAX_STEPS; step += 1) {
+      const beforeTop = scrollContainer.scrollTop;
+      const distance = Math.max(480, Math.floor(scrollContainer.clientHeight * 0.8));
+      const scrollableHeight = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+      scrollContainer.scrollTop = Math.min(
+        scrollableHeight,
+        Math.max(0, beforeTop + direction * distance),
+      );
+      await waitForHistoryRender();
+      located = locateReferenceMessage(reference, root);
+      if (located) return;
+      const afterTop = scrollContainer.scrollTop;
+      const latestScrollableHeight = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+      const atBoundary = direction < 0
+        ? afterTop <= 1
+        : latestScrollableHeight - afterTop <= 1;
+      if (Math.abs(afterTop - beforeTop) < 1 || atBoundary) stalledSteps += 1;
+      else stalledSteps = 0;
+      if (stalledSteps >= HISTORY_SCAN_STALL_LIMIT) return;
+    }
+  };
+  try {
+    await scan(-1);
+    if (!located) {
+      const scrollableHeight = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+      scrollContainer.scrollTop = Math.round(scrollableHeight * originalScrollRatio);
+      await waitForHistoryRender();
+      await scan(1);
+    }
+    return located;
+  } finally {
+    if (!located) {
+      const scrollableHeight = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+      scrollContainer.scrollTop = Math.round(scrollableHeight * originalScrollRatio);
+    }
+  }
+}
+
+function matchesReferenceTarget(
+  message: HTMLElement,
+  reference: QuestionReference & { sourceLocator: ReferenceLocator },
+): boolean {
+  const text = normalizeMessageText(message.innerText);
+  if (reference.type === "assistant_quote") {
+    const excerpt = normalizeMessageText(reference.excerpt);
+    if (excerpt.length >= 12 && text.includes(excerpt.slice(0, Math.min(120, excerpt.length)))) {
+      return true;
+    }
+  }
+  return Boolean(
+    reference.sourceLocator.fingerprint &&
+    fingerprintMessageText(text) === reference.sourceLocator.fingerprint,
+  );
+}
+
+function getAuthoredMessages(
+  root: ParentNode,
+  role: ReferenceLocator["role"],
+): HTMLElement[] {
+  const selector = role === "assistant"
+    ? CHATGPT_SELECTORS.assistantMessage
+    : CHATGPT_SELECTORS.userMessage;
+  return Array.from(root.querySelectorAll<HTMLElement>(selector));
+}
+
+function findAuthoredMessageByAttribute(
+  root: ParentNode,
+  role: ReferenceLocator["role"],
+  attribute: "data-message-id" | "data-turn-id",
+  value: string,
+): HTMLElement | undefined {
+  const selector = role === "assistant"
+    ? CHATGPT_SELECTORS.assistantMessage
+    : CHATGPT_SELECTORS.userMessage;
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(`[${attribute}]`));
+  const matched = candidates.find((element) => element.getAttribute(attribute) === value);
+  if (!matched) return undefined;
+  if (matched.matches(selector)) return matched;
+  return matched.querySelector<HTMLElement>(selector) ??
+    matched.closest<HTMLElement>(selector) ??
+    undefined;
+}
+
 function getAssistantContextForQuestion(
   selectedQuestion: HTMLElement,
   root: ParentNode,
@@ -421,6 +595,26 @@ function reindexCapturedQuestions(questions: CapturedQuestion[]): CapturedQuesti
       messageId: messageLocator.messageId || messageLocator.turnId || messageAnchor,
       messageAnchor,
       messageLocator,
+      ...(captured.references
+        ? {
+            references: captured.references.map((reference) =>
+              reference.sourceLocator?.role === "user"
+                ? {
+                    ...reference,
+                    sourceLocator: {
+                      version: 1 as const,
+                      chatId: captured.chatId,
+                      role: "user" as const,
+                      ...(messageLocator.messageId ? { messageId: messageLocator.messageId } : {}),
+                      ...(messageLocator.turnId ? { turnId: messageLocator.turnId } : {}),
+                      ordinal,
+                      fingerprint,
+                    },
+                  }
+                : reference,
+            ),
+          }
+        : {}),
     };
   });
 }
@@ -456,7 +650,7 @@ function findAnchoredUserMessage(
 ): HTMLElement | undefined {
   return getUserMessages(root).find((element, index) =>
     index === ordinal &&
-    fingerprintMessageText(normalizeMessageText(element.innerText)) === fingerprint
+    fingerprintMessageText(messageQuestionText(element)) === fingerprint
   );
 }
 
@@ -468,7 +662,7 @@ function locateQuestionByFingerprint(
   const anchor = locatorAnchor(messageLocator, messageAnchor);
   if (!anchor) return undefined;
   const target = getUserMessages(root).find((element) =>
-    fingerprintMessageText(normalizeMessageText(element.innerText)) === anchor.fingerprint
+    fingerprintMessageText(messageQuestionText(element)) === anchor.fingerprint
   );
   return target ? revealQuestionMessage(target, "anchor") : undefined;
 }
@@ -491,6 +685,62 @@ function locatorAnchor(
 
 function normalizeMessageText(value: string | undefined): string {
   return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function messageQuestionText(element: HTMLElement): string {
+  const visibleText = questionTextWithoutReferences(element);
+  if (visibleText) return visibleText;
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  const add = (label: string) => {
+    const normalized = normalizeMessageText(label);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    labels.push(normalized);
+  };
+  for (const attachment of Array.from(element.querySelectorAll<HTMLElement>(
+    "[data-file-name], [data-filename], a[download]",
+  ))) {
+    const name = attachment.getAttribute("data-file-name") ??
+      attachment.getAttribute("data-filename") ??
+      attachment.getAttribute("download");
+    if (name) add(`附件：${name}`);
+  }
+  for (const image of Array.from(element.querySelectorAll<HTMLImageElement>("img"))) {
+    if (image.getAttribute("aria-hidden") === "true") continue;
+    add(`图片：${image.getAttribute("data-file-name") || image.alt || "未命名图片"}`);
+  }
+  for (const quote of Array.from(element.querySelectorAll<HTMLElement>(
+    'blockquote, [data-testid*="quote" i], [data-quoted-message-id], [data-source-message-id]',
+  ))) {
+    const excerpt = normalizeMessageText(quote.innerText).slice(0, 80);
+    if (excerpt) add(`引用回答：${excerpt}`);
+  }
+  return labels.join("；");
+}
+
+function questionTextWithoutReferences(element: HTMLElement): string {
+  const originalText = normalizeMessageText(element.innerText);
+  if (typeof element.cloneNode !== "function") return originalText;
+  try {
+    const clone = element.cloneNode(true) as HTMLElement;
+    const referenceSelector = [
+      "blockquote",
+      "a[download]",
+      "[data-file-name]",
+      "[data-filename]",
+      '[data-testid*="attachment" i]',
+      '[data-testid*="quote" i]',
+      "[data-quoted-message-id]",
+      "[data-source-message-id]",
+    ].join(",");
+    const references = Array.from(clone.querySelectorAll(referenceSelector));
+    if (!references.length) return originalText;
+    references.forEach((reference) => reference.remove());
+    return normalizeMessageText(clone.innerText || clone.textContent || undefined);
+  } catch {
+    return originalText;
+  }
 }
 
 function revealQuestionMessage(

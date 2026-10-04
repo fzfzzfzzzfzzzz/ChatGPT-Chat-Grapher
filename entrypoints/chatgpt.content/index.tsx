@@ -5,8 +5,10 @@ import { defineContentScript } from "wxt/utils/define-content-script";
 import {
   getLatestCapturedQuestion,
   locateQuestionOnCurrentPage,
+  locateQuestionReferenceOnCurrentPage,
   watchForRefinedMessageLocator,
 } from "../../adapters/chatgpt/questionCapture";
+import { captureFullConversation } from "../../adapters/chatgpt/conversationCapture";
 import { getConversationId } from "../../adapters/chatgpt/getConversation";
 import { CHATGPT_SELECTORS } from "../../adapters/chatgpt/selectors";
 import type {
@@ -16,10 +18,7 @@ import type {
   LocateQuestionResponse,
 } from "../../shared/messages";
 import { isExtensionMessage } from "../../shared/messages";
-import {
-  CAPTURE_SERVICE_ENABLED_KEY,
-  captureServiceEnabledFromStorage,
-} from "../../shared/captureService";
+import { canAutoCaptureQuestion } from "../../shared/captureService";
 import { FloatingNavigationPanel } from "./FloatingNavigationPanel";
 import { FLOATING_PANEL_READY_EVENT } from "./panelLifecycle";
 import "./style.css";
@@ -30,6 +29,9 @@ export default defineContentScript({
   runAt: "document_idle",
 
   async main(ctx) {
+    let captureEnabled = true;
+    let projectSelected = false;
+    let captureArmed = false;
     let floatingPanelReady = false;
     const handleFloatingPanelReady = () => {
       floatingPanelReady = true;
@@ -44,6 +46,34 @@ export default defineContentScript({
         sendResponse({ ready: floatingPanelReady } satisfies ContentScriptReadyResponse);
         return undefined;
       }
+      if (rawMessage.type === "TAB_CAPTURE_STATE_UPDATED") {
+        captureEnabled = rawMessage.enabled;
+        if (!captureEnabled) captureArmed = false;
+        return undefined;
+      }
+      if (rawMessage.type === "TAB_PROJECT_STATE_UPDATED") {
+        projectSelected = rawMessage.selected;
+        if (!projectSelected) captureArmed = false;
+        return undefined;
+      }
+      if (rawMessage.type === "FLOATING_PANEL_STATE_UPDATED") {
+        captureEnabled = rawMessage.state.captureEnabled;
+        projectSelected = Boolean(rawMessage.state.projectId);
+        if (!canAutoCaptureQuestion(captureEnabled, projectSelected)) captureArmed = false;
+        return undefined;
+      }
+      if (rawMessage.type === "COLLECT_REVIEW_SOURCE") {
+        void captureFullConversation().then(sendResponse).catch(() => {
+          sendResponse({
+            chatId: getConversationId(location.href) ?? "",
+            messages: [],
+            complete: false,
+            missingSourceIds: [],
+            stoppedReason: "source_unavailable",
+          });
+        });
+        return true;
+      }
       if (rawMessage.type === "LOCATE_QUESTION") {
         const currentChatId = getConversationId(location.href);
         void locateQuestionOnCurrentPage(rawMessage, currentChatId).then((response) => {
@@ -53,6 +83,19 @@ export default defineContentScript({
             ok: false,
             code: "MESSAGE_NOT_FOUND",
             error: "扫描当前页面时未能找到原问题。",
+          } satisfies LocateQuestionResponse);
+        });
+        return true;
+      }
+      if (rawMessage.type === "LOCATE_REFERENCE") {
+        const currentChatId = getConversationId(location.href);
+        void locateQuestionReferenceOnCurrentPage(rawMessage.reference, currentChatId).then((response) => {
+          sendResponse(response satisfies LocateQuestionResponse);
+        }).catch(() => {
+          sendResponse({
+            ok: false,
+            code: "MESSAGE_NOT_FOUND",
+            error: "扫描当前页面时未能找到引用来源。",
           } satisfies LocateQuestionResponse);
         });
         return true;
@@ -77,15 +120,21 @@ export default defineContentScript({
         root?.unmount();
       },
     });
-    ui.mount();
 
-    const storedCapturePreference = await browser.storage.local
-      .get(CAPTURE_SERVICE_ENABLED_KEY)
-      .catch(() => ({} as Record<string, unknown>));
-    let captureEnabled = captureServiceEnabledFromStorage(
-      storedCapturePreference[CAPTURE_SERVICE_ENABLED_KEY],
-    );
-    let captureArmed = false;
+    const initialCaptureState = await browser.runtime.sendMessage({
+      type: "GET_TAB_CAPTURE_STATE",
+    } satisfies ExtensionMessage)
+      .catch(() => undefined) as unknown;
+    if (initialCaptureState && typeof initialCaptureState === "object") {
+      if ("enabled" in initialCaptureState) {
+        captureEnabled = (initialCaptureState as { enabled?: unknown }).enabled !== false;
+      }
+      if ("projectSelected" in initialCaptureState) {
+        projectSelected = (initialCaptureState as { projectSelected?: unknown })
+          .projectSelected === true;
+      }
+    }
+    ui.mount();
     let lastCaptureKey = "";
     const locatorWatchers = new Set<() => void>();
 
@@ -107,7 +156,7 @@ export default defineContentScript({
     };
 
     const armCapture = () => {
-      if (!captureEnabled) {
+      if (!canAutoCaptureQuestion(captureEnabled, projectSelected)) {
         captureArmed = false;
         return;
       }
@@ -116,7 +165,7 @@ export default defineContentScript({
     };
 
     const tryCapture = async () => {
-      if (!captureEnabled) {
+      if (!canAutoCaptureQuestion(captureEnabled, projectSelected)) {
         captureArmed = false;
         return;
       }
@@ -171,18 +220,6 @@ export default defineContentScript({
     document.addEventListener("click", handleClick, true);
     document.addEventListener("submit", handleSubmit, true);
 
-    const handleStorageChanged = (
-      changes: Record<string, { newValue?: unknown }>,
-      areaName: string,
-    ) => {
-      if (areaName !== "local" || !changes[CAPTURE_SERVICE_ENABLED_KEY]) return;
-      captureEnabled = captureServiceEnabledFromStorage(
-        changes[CAPTURE_SERVICE_ENABLED_KEY]?.newValue,
-      );
-      if (!captureEnabled) captureArmed = false;
-    };
-    browser.storage.onChanged.addListener(handleStorageChanged);
-
     const observer = new MutationObserver(() => void tryCapture());
     observer.observe(document.body, { childList: true, subtree: true });
 
@@ -209,7 +246,6 @@ export default defineContentScript({
       document.removeEventListener("keydown", handleKeydown, true);
       document.removeEventListener("click", handleClick, true);
       document.removeEventListener("submit", handleSubmit, true);
-      browser.storage.onChanged.removeListener(handleStorageChanged);
       browser.runtime.onMessage.removeListener(handleContentScriptMessage);
       window.removeEventListener(FLOATING_PANEL_READY_EVENT, handleFloatingPanelReady);
     });

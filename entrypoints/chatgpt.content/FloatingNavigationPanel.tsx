@@ -2,6 +2,7 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  FileText,
   GitBranch,
   GripVertical,
   List,
@@ -36,12 +37,15 @@ import {
   getCapturedQuestionFromElement,
   watchForRefinedMessageLocator,
 } from "../../adapters/chatgpt/questionCapture";
+import { captureFullConversation } from "../../adapters/chatgpt/conversationCapture";
 import { CHATGPT_SELECTORS } from "../../adapters/chatgpt/selectors";
 import {
   hasRecognizedNewQuestion,
   shouldResetFloatingPanelSelection,
 } from "../../graph/floatingPanelSelection";
 import { CompactProjectGraph } from "./CompactProjectGraph";
+import { ConversationReviewDialog } from "../../components/ConversationReviewDialog";
+import { useConversationReview } from "../../components/useConversationReview";
 import {
   type BuildCurrentPageGraphResponse,
   type CaptureQuestionResponse,
@@ -55,15 +59,22 @@ import {
   type PanelMutationResponse,
   type PanelParentResult,
   type PanelQuestionSource,
+  type ReviewMutationResponse,
 } from "../../shared/messages";
 import { isExtensionMessage } from "../../shared/messages";
+import { formatReferenceCountSummary } from "../../shared/questionReferences";
 import type { NodeStatus } from "../../types/domain";
 import { FLOATING_PANEL_READY_EVENT } from "./panelLifecycle";
+import "../../components/conversationReview.css";
 
 const PANEL_PREFERENCES_KEY = "floatingPanelPreferencesV06";
 const REQUESTED_SIDE_PANEL_VIEW_KEY = "requestedSidePanelView";
 const PAGE_QUESTION_SELECTION_ATTRIBUTE = "data-chat-graph-selecting-question";
 const VIEWPORT_GAP = 12;
+const PANEL_MIN_WIDTH = 280;
+const PANEL_MAX_WIDTH = 520;
+const PANEL_MIN_HEIGHT = 220;
+const PANEL_MAX_VIEWPORT_HEIGHT_RATIO = 0.7;
 
 const EMPTY_STATE: FloatingPanelState = {
   captureEnabled: true,
@@ -81,10 +92,13 @@ type PanelPreferences = {
   view?: FloatingPanelView;
   x?: number;
   y?: number;
+  width?: number;
+  height?: number;
 };
 
 type FloatingPanelView = "current" | "graph";
 type NodeDeleteMode = "node" | "subtree";
+type PanelSize = { width: number; height: number };
 
 type NavigationTarget = PanelQuestionSource & { question: string };
 
@@ -107,11 +121,21 @@ export function FloatingNavigationPanel() {
     offsetX: number;
     offsetY: number;
   } | undefined>(undefined);
+  const resizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    originX: number;
+    originY: number;
+  } | undefined>(undefined);
   const [state, setState] = useState<FloatingPanelState>(EMPTY_STATE);
   const [mode, setMode] = useState<FloatingPanelMode>("working");
   const [dismissed, setDismissed] = useState(false);
   const [panelView, setPanelView] = useState<FloatingPanelView>("current");
   const [position, setPosition] = useState<{ x: number; y: number }>();
+  const [panelSize, setPanelSize] = useState<PanelSize>();
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [editingParent, setEditingParent] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -140,6 +164,24 @@ export function FloatingNavigationPanel() {
   const [confirmingNavigationTarget, setConfirmingNavigationTarget] = useState<NavigationTarget>();
   const [navigationBusy, setNavigationBusy] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(getPageTheme);
+  const reviewController = useConversationReview({
+    ...(state.projectId ? { projectId: state.projectId } : {}),
+    nodes: state.reviewNodes ?? [],
+    entrySource: "floating_panel",
+    ...(selectedNodeId ?? state.currentNodeId
+      ? { defaultAnchorNodeId: selectedNodeId ?? state.currentNodeId }
+      : {}),
+    // Wrap the DOM collector so the controller's optional expected-chat
+    // argument cannot be mistaken for the collector's ParentNode argument.
+    collectSource: () => captureFullConversation(),
+    onError: setError,
+    onOpenSettings: () => {
+      void openDetail();
+    },
+    onChanged: async () => {
+      await loadFloatingPanelState();
+    },
+  });
 
   useEffect(() => {
     void browser.storage.local
@@ -154,6 +196,9 @@ export function FloatingNavigationPanel() {
         setPanelView(preferences.view ?? "current");
         if (preferences.x !== undefined && preferences.y !== undefined) {
           setPosition({ x: preferences.x, y: preferences.y });
+        }
+        if (preferences.width !== undefined && preferences.height !== undefined) {
+          setPanelSize({ width: preferences.width, height: preferences.height });
         }
       })
       .finally(() => setPreferencesReady(true));
@@ -317,11 +362,12 @@ export function FloatingNavigationPanel() {
           mode,
           view: panelView,
           ...(position ? position : {}),
+          ...(panelSize ? panelSize : {}),
         } satisfies PanelPreferences,
       });
     }, 120);
     return () => window.clearTimeout(timeout);
-  }, [mode, panelView, position, preferencesReady]);
+  }, [mode, panelSize, panelView, position, preferencesReady]);
 
   useEffect(() => {
     setParentSummaryExpanded(false);
@@ -356,25 +402,54 @@ export function FloatingNavigationPanel() {
   }
 
   useEffect(() => {
-    const clampCurrentPosition = () => {
-      if (!position || !panelRef.current) return;
+    const clampCurrentGeometry = () => {
+      if (!panelRef.current) return;
       const rect = panelRef.current.getBoundingClientRect();
-      const next = clampPosition(position.x, position.y, rect.width, rect.height);
-      if (next.x !== position.x || next.y !== position.y) setPosition(next);
+      const nextSize = mode === "working" && panelSize
+        ? clampPanelSize(panelSize.width, panelSize.height)
+        : undefined;
+      if (
+        nextSize &&
+        (nextSize.width !== panelSize?.width || nextSize.height !== panelSize?.height)
+      ) {
+        setPanelSize(nextSize);
+      }
+      if (!position) return;
+      const nextPosition = clampPosition(
+        position.x,
+        position.y,
+        nextSize?.width ?? rect.width,
+        nextSize?.height ?? rect.height,
+      );
+      if (nextPosition.x !== position.x || nextPosition.y !== position.y) {
+        setPosition(nextPosition);
+      }
     };
-    window.addEventListener("resize", clampCurrentPosition);
-    const frame = window.requestAnimationFrame(clampCurrentPosition);
+    window.addEventListener("resize", clampCurrentGeometry);
+    const frame = window.requestAnimationFrame(clampCurrentGeometry);
     return () => {
       window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", clampCurrentPosition);
+      window.removeEventListener("resize", clampCurrentGeometry);
     };
-  }, [mode, position]);
+  }, [mode, panelSize, position]);
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
+      const resize = resizeRef.current;
+      if (resize && event.pointerId === resize.pointerId) {
+        event.preventDefault();
+        setPanelSize(clampPanelSize(
+          resize.startWidth + event.clientX - resize.startX,
+          resize.startHeight + event.clientY - resize.startY,
+          resize.originX,
+          resize.originY,
+        ));
+        return;
+      }
       const drag = dragRef.current;
       const panel = panelRef.current;
       if (!drag || !panel || event.pointerId !== drag.pointerId) return;
+      event.preventDefault();
       const rect = panel.getBoundingClientRect();
       setPosition(
         clampPosition(
@@ -387,6 +462,7 @@ export function FloatingNavigationPanel() {
     };
     const stop = (event: PointerEvent) => {
       if (dragRef.current?.pointerId === event.pointerId) dragRef.current = undefined;
+      if (resizeRef.current?.pointerId === event.pointerId) resizeRef.current = undefined;
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
@@ -411,7 +487,29 @@ export function FloatingNavigationPanel() {
       offsetX: event.clientX - rect.left,
       offsetY: event.clientY - rect.top,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function beginResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragRef.current = undefined;
+    const origin = clampPosition(rect.left, rect.top, rect.width, rect.height);
+    setPosition(origin);
+    setPanelSize({ width: rect.width, height: rect.height });
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: rect.width,
+      startHeight: rect.height,
+      originX: origin.x,
+      originY: origin.y,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
   function rememberLatestState(nextState: FloatingPanelState) {
@@ -505,6 +603,10 @@ export function FloatingNavigationPanel() {
 
   async function viewGraphNodeDetails(nodeId: string) {
     if (await selectGraphNode(nodeId)) setPanelView("current");
+  }
+
+  async function changeGraphNodeParent(nodeId: string) {
+    if (await selectGraphNode(nodeId)) beginParentEditing();
   }
 
   async function selectProject(projectId: string) {
@@ -670,6 +772,27 @@ export function FloatingNavigationPanel() {
     return Boolean(result);
   }
 
+  async function deleteGraphReview(documentId: string): Promise<boolean> {
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const response = await browser.runtime.sendMessage({
+        type: "DELETE_REVIEW_DOCUMENT",
+        documentId,
+      } satisfies ExtensionMessage) as ReviewMutationResponse;
+      if (!response.ok) {
+        setError(response.error);
+        return false;
+      }
+      await loadFloatingPanelState();
+      setNotice("总结已从本地图中删除。");
+      return true;
+    } catch {
+      setError("暂时无法删除这个总结，请重试。");
+      return false;
+    }
+  }
+
   async function navigateQuestionTarget(target: NavigationTarget): Promise<boolean> {
     setError(undefined);
     setNavigationBusy(true);
@@ -789,8 +912,19 @@ export function FloatingNavigationPanel() {
     }
   }
 
-  const panelStyle = position
-    ? { left: `${position.x}px`, top: `${position.y}px`, right: "auto" }
+  const panelStyle = position || panelSize
+    ? {
+        ...(position
+          ? { left: `${position.x}px`, top: `${position.y}px`, right: "auto" }
+          : {}),
+        ...(mode === "working" && panelSize
+          ? {
+              width: `${panelSize.width}px`,
+              height: `${panelSize.height}px`,
+              maxHeight: `${PANEL_MAX_VIEWPORT_HEIGHT_RATIO * 100}vh`,
+            }
+          : {}),
+      }
     : undefined;
   const parentLabel = getParentLabel(state);
   const isViewingGraphNode = Boolean(
@@ -802,6 +936,7 @@ export function FloatingNavigationPanel() {
   const viewedNodeDescendantCount = state.viewingNodeId
     ? countDescendants(state.graphNodes, state.viewingNodeId)
     : 0;
+  const currentReferenceSummary = formatReferenceCountSummary(state.currentReferenceCounts);
   const canEditParent = state.parentState !== "processing" && Boolean(
     state.currentNodeId || state.currentCandidateId,
   );
@@ -853,26 +988,37 @@ export function FloatingNavigationPanel() {
         setError(response.error);
         return;
       }
+      if (response.destination === "unassigned") {
+        applyAuthoritativeState(response.state);
+        setError("请先为当前标签页选择项目，再加入问题。");
+        return;
+      }
       if (response.destination === "disabled") {
         setError("所选问题未能加入项目，请重试。");
         return;
       }
 
       setPanelView("current");
-      if (response.nodeId) {
-        setGraphSelection(response.nodeId);
-        await loadFloatingPanelState(response.nodeId);
-      } else {
-        applyAuthoritativeState(response.state);
-      }
+      applyAuthoritativeState(response.state);
 
-      if (response.destination === "duplicate") {
+      if (response.destination === "existing_node") {
+        setEditingParent(false);
         setNotice("所选问题已经在当前项目中，已切换到对应节点。");
+      } else if (response.destination === "existing_candidate") {
+        if (response.candidateStatus === "processing") {
+          setEditingParent(false);
+          setNotice("所选问题已在待讨论中，正在分析父节点，请稍候。");
+        } else {
+          setEditingParent(true);
+          setNotice("所选问题已在待讨论中，请继续确认父节点。");
+        }
       } else if (response.destination === "inbox") {
+        setEditingParent(false);
         setNotice(captured.assistantContext
           ? "已读取所选问题和回答，请确认它的父节点。"
           : "已读取所选问题；未找到对应回答，请确认它的父节点。");
       } else {
+        setEditingParent(false);
         setNotice(captured.assistantContext
           ? "已加入所选问题；回答仅用于本次摘要和父节点匹配。"
           : "已加入所选问题；未找到对应回答，已仅根据问题分析。");
@@ -942,9 +1088,6 @@ export function FloatingNavigationPanel() {
       >
         {navigationBusy ? "正在定位…" : "定位原文"}
       </button>
-      <button type="button" role="menuitem" disabled={!canEditParent} onClick={beginParentEditing}>
-        更换父节点
-      </button>
       {isViewingGraphNode ? (
         <>
           <button
@@ -997,6 +1140,9 @@ export function FloatingNavigationPanel() {
         onClick={() => state.parentId && requestNodeNavigation(state.parentId)}
       >
         {navigationBusy ? "正在定位…" : "定位原文"}
+      </button>
+      <button type="button" role="menuitem" disabled={!canEditParent} onClick={beginParentEditing}>
+        更换当前父节点
       </button>
     </NodeActionMenu>
   );
@@ -1051,7 +1197,7 @@ export function FloatingNavigationPanel() {
   return (
     <section
       ref={panelRef}
-      className="chat-graph-panel chat-graph-panel--working"
+      className={`chat-graph-panel chat-graph-panel--working${panelSize ? " chat-graph-panel--user-sized" : ""}`}
       data-theme={theme}
       style={panelStyle}
       aria-label="Chat Graph 当前讨论导航"
@@ -1242,6 +1388,15 @@ export function FloatingNavigationPanel() {
         </div>
         <div className="chat-graph-header__actions">
           <button
+            type="button"
+            title="总结当前对话"
+            aria-label="总结当前对话"
+            disabled={!state.projectId || reviewController.loading}
+            onClick={() => reviewController.openReview()}
+          >
+            <FileText size={15} aria-hidden="true" />
+          </button>
+          <button
             className={`chat-graph-capture-toggle${state.captureEnabled ? " is-enabled" : " is-paused"}`}
             type="button"
             title={togglingCapture
@@ -1398,14 +1553,26 @@ export function FloatingNavigationPanel() {
         {panelView === "graph" ? (
           <CompactProjectGraph
             nodes={state.graphNodes ?? []}
+            reviewArtifacts={state.reviewArtifacts ?? []}
             {...(state.currentNodeId ? { currentNodeId: state.currentNodeId } : {})}
             {...(state.focusedNodeId ? { focusedNodeId: state.focusedNodeId } : {})}
             {...(selectedNodeId ? { selectedNodeId } : {})}
             onSelectNode={(nodeId) => void selectGraphNode(nodeId)}
             onViewNodeDetails={(nodeId) => void viewGraphNodeDetails(nodeId)}
+            onChangeNodeParent={(nodeId) => void changeGraphNodeParent(nodeId)}
             onSetNodeStatus={setGraphNodeStatus}
             onDeleteNode={deleteGraphNode}
             onRequestLocateNode={requestNodeNavigation}
+            onSummarizeNode={(nodeId) => reviewController.openReview({
+              anchorNodeId: nodeId,
+              entrySource: "node_menu",
+              scopeType: "node_context",
+            })}
+            onOpenReviewArtifact={(artifact) => reviewController.openReview({
+              documentId: artifact.documentId,
+              anchorNodeId: artifact.anchorNodeId,
+            })}
+            onDeleteReviewArtifact={deleteGraphReview}
             onOpenFullGraph={() => void openDetail("graph")}
           />
         ) : state.parentState === "selecting" ? (
@@ -1418,6 +1585,11 @@ export function FloatingNavigationPanel() {
                 <div className="chat-graph-label chat-graph-label--current">CURRENT</div>
                 {currentActionMenu}
               </div>
+              {currentReferenceSummary ? (
+                <div className="chat-graph-reference-summary" aria-label={`引用内容：${currentReferenceSummary}`}>
+                  {currentReferenceSummary}
+                </div>
+              ) : null}
               <p className="chat-graph-copy chat-graph-copy--current" title={state.currentQuestion}>
                 {state.currentQuestion || "—"}
               </p>
@@ -1429,6 +1601,7 @@ export function FloatingNavigationPanel() {
               ) : null}
             </section>
             <ParentEditor
+              key={`compact-${state.currentCandidateId ?? state.currentNodeId ?? "current"}`}
               state={state}
               compact
               onComplete={() => setEditingParent(false)}
@@ -1448,6 +1621,11 @@ export function FloatingNavigationPanel() {
                 </div>
                 {currentActionMenu}
               </div>
+              {currentReferenceSummary ? (
+                <div className="chat-graph-reference-summary" aria-label={`引用内容：${currentReferenceSummary}`}>
+                  {currentReferenceSummary}
+                </div>
+              ) : null}
               <p className="chat-graph-copy chat-graph-copy--current" title={state.currentQuestion}>
                 {state.currentQuestion || "—"}
               </p>
@@ -1528,6 +1706,7 @@ export function FloatingNavigationPanel() {
       {editingParent ? (
         <div className="chat-graph-editor-layer">
           <ParentEditor
+            key={`editing-${state.currentCandidateId ?? state.currentNodeId ?? "current"}`}
             state={state}
             onCancel={() => setEditingParent(false)}
             onComplete={() => setEditingParent(false)}
@@ -1565,6 +1744,16 @@ export function FloatingNavigationPanel() {
           </section>
         </div>
       ) : null}
+      {reviewController.dialogProps ? (
+        <ConversationReviewDialog {...reviewController.dialogProps} />
+      ) : null}
+      <button
+        className="chat-graph-resize-handle"
+        type="button"
+        title="拖动调整浮窗大小"
+        aria-label="调整 Chat Graph 浮窗大小"
+        onPointerDown={beginResize}
+      />
     </section>
   );
 }
@@ -1645,8 +1834,11 @@ function ParentEditor({
     return (state.rootConfidence ?? 0) > (best?.confidence ?? 0) ? "" : best?.id;
   }, [state.recommendedParents, state.rootConfidence]);
   const [query, setQuery] = useState("");
+  const latestConversationOption = state.parentOptions.find((option) => option.isPrevious);
   const [selectedId, setSelectedId] = useState(
-    compact ? suggestedSelection ?? "" : state.parentId ?? "",
+    compact
+      ? suggestedSelection ?? ""
+      : latestConversationOption?.id ?? state.parentId ?? "",
   );
   const [saving, setSaving] = useState(false);
   const options = compact ? state.recommendedParents : state.parentOptions;
@@ -1702,7 +1894,7 @@ function ParentEditor({
             />
             <span title={option.question}>{option.question}</span>
             {option.isPrevious ? (
-              <small className="is-previous">上一问</small>
+              <small className="is-previous">{compact ? "上一问" : "最后一次"}</small>
             ) : option.confidence !== undefined ? (
               <small>{Math.round(option.confidence * 100)}%</small>
             ) : null}
@@ -1768,6 +1960,29 @@ function clampPosition(x: number, y: number, width: number, height: number) {
   };
 }
 
+function clampPanelSize(width: number, height: number, originX?: number, originY?: number): PanelSize {
+  const viewportWidth = Math.max(0, window.innerWidth - VIEWPORT_GAP * 2);
+  const viewportHeight = Math.max(0, window.innerHeight - VIEWPORT_GAP * 2);
+  const availableWidth = originX === undefined
+    ? viewportWidth
+    : Math.max(0, window.innerWidth - originX - VIEWPORT_GAP);
+  const availableHeight = originY === undefined
+    ? viewportHeight
+    : Math.max(0, window.innerHeight - originY - VIEWPORT_GAP);
+  const maximumWidth = Math.min(PANEL_MAX_WIDTH, viewportWidth, availableWidth);
+  const maximumHeight = Math.min(
+    window.innerHeight * PANEL_MAX_VIEWPORT_HEIGHT_RATIO,
+    viewportHeight,
+    availableHeight,
+  );
+  const minimumWidth = Math.min(PANEL_MIN_WIDTH, maximumWidth);
+  const minimumHeight = Math.min(PANEL_MIN_HEIGHT, maximumHeight);
+  return {
+    width: Math.min(Math.max(width, minimumWidth), maximumWidth),
+    height: Math.min(Math.max(height, minimumHeight), maximumHeight),
+  };
+}
+
 function asPreferences(value: unknown): PanelPreferences | undefined {
   if (!value || typeof value !== "object") return undefined;
   const preferences = value as Partial<PanelPreferences>;
@@ -1780,6 +1995,12 @@ function asPreferences(value: unknown): PanelPreferences | undefined {
       : {}),
     ...(typeof preferences.x === "number" ? { x: preferences.x } : {}),
     ...(typeof preferences.y === "number" ? { y: preferences.y } : {}),
+    ...(typeof preferences.width === "number" && Number.isFinite(preferences.width)
+      ? { width: preferences.width }
+      : {}),
+    ...(typeof preferences.height === "number" && Number.isFinite(preferences.height)
+      ? { height: preferences.height }
+      : {}),
   };
 }
 

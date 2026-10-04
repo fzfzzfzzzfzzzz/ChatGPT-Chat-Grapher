@@ -17,7 +17,7 @@ export default defineConfig({
   },
   manifest: ({ browser }) => ({
     name: "Chat Graph",
-    description: "Keep the current ChatGPT question and its parent visible while you work.",
+    description: "Navigate ChatGPT question graphs and create local, evidence-linked Conversation Reviews.",
     version: packageJson.version,
     ...(browser === "chrome"
       ? { minimum_chrome_version: "116" }

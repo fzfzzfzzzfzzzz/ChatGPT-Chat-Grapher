@@ -1,6 +1,6 @@
 # Chat Graph — Roadmap
 
-> 文档版本：2026-08 · 当前产品版本：v0.12.0
+> 文档版本：2026-08 · 当前产品版本：v1.0.0
 
 ## 产品定位
 
@@ -10,14 +10,15 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 - Current Path 与当前焦点
 - 分支导航与状态
 - Node 到原始 ChatGPT 消息的定位
+- 用户主动生成的结构化对话总结及其本地版本
 
 核心约束：
 
-> ChatGPT stores conversation content; Chat Graph stores discussion structure.
+> ChatGPT stores conversation content; Chat Graph stores discussion structure and review artifacts.
 
-> 除非后续 PRD 明确改变此决定，否则 Node 用户内容不得扩张到 question / summary / status 之外。
+> Question Node 的主要讨论内容保持为 question / summary / status；v0.13 允许附加受限的引用 metadata、缩略图与短摘录。v1.0 的 Review Document 是独立 artifact，只保存结构化结果、定位与最长 240 字的证据摘录，不持久化完整 user / assistant 原文。
 
-任何新增能力必须直接帮助用户找回主线、管理分支或定位原始聊天；否则不进入近期 Roadmap。产品不默认扩张为知识管理系统。
+任何新增能力必须直接帮助用户找回主线、管理分支、复盘对话或定位原始聊天；否则不进入近期 Roadmap。产品不默认扩张为通用知识管理系统。
 
 ## 历史版本
 
@@ -55,7 +56,7 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 
 明确不做：第二套聊天输入、完整聊天数据库、Answer → Node、Decision/Reason/Resource/Routes 数据库、复杂多类型边、多父 DAG、知识图谱、账号与云同步。
 
-## 当前版本
+## 已发布版本主线
 
 ### v0.6 — Persistent Floating Navigation Panel
 
@@ -113,14 +114,36 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 - 备份不包含 AI 设置或 API Key，重复导入不会覆盖现有项目。
 - 增加 GitHub Bug Report 和 Feature Request Issue 表单。
 
+### v0.13.0 — Reference-aware Nodes
+
+- 捕获附件、图片和 Assistant 回答引用，并附着在对应问题节点上。
+- 图节点显示引用计数，节点详情展示文件信息、受限缩略图和回答短摘录。
+- 引用来源支持用户/Assistant 双角色定位与虚拟化历史扫描。
+- 项目搜索扩展到附件名称与回答摘录。
+- 备份 schema v2 保存并校验引用信息，同时兼容 schema v1。
+- 不引入 Resource/Answer 独立节点、多类型边、附件正文或完整回答存储。
+
+### v1.0.0 — Conversation Review
+
+- 从页内浮窗、Side Panel 工具栏和图节点菜单使用同一套总结配置与结果界面。
+- 支持当前逻辑分支、整个当前对话、当前节点及上下文三种范围；“分支”仅表示 Chat Graph 祖先路径，不建模 ChatGPT 原生编辑/重新生成分支。
+- 提供 33 个模块与 5 个预设，按固定目录展示结构化条目、结论状态、推断标记、用户编辑标记和证据。
+- 支持来源完整性预览；无法读取的来源必须显式列出，只有用户确认后才允许带缺失标记的部分生成。
+- 完整来源原文仅在任务内存中存在并直发当前 AI Provider；本地保存总结、版本、任务 metadata、定位和最长 240 字证据摘录。
+- 长对话先提取一次事实，再分批生成模块；可保留部分成功结果并针对失败范围或模块重试。
+- 总结是独立紫色文档 artifact，不参与问题图的 Current、status 或父节点推荐；建议分支使用可升级的 `planned` Question Node。
+- 支持编辑与撤销、复制、Markdown、上下文包、保存到图、历史版本、过期提示和本地反馈。
+- Dexie schema v9 与 JSON 备份 schema v3 覆盖总结关系和版本，并保留 v1/v2 备份导入兼容。
+- Chrome 116+、Firefox 115+ 为最低支持版本；Node.js 22 CI 执行完整检查与双浏览器构建。
+
 ## 后续优先级
 
-### v0.7 候选
+### v1.x 候选
 
 1. Parent Recommendation 准确率、候选召回与评测集
-2. 只作为 Candidate 的 Branch Suggestion（用户采用后才建正式 Node）
+2. 总结质量评测、模块预设迭代与无原文泄露的诊断工具
 3. 多 Chat / Project 聚合与导航可靠性
-4. 轻量 Context Packet
+4. 对 planned 分支的采用率与去重体验优化
 
 ### 暂不优先
 
@@ -129,3 +152,5 @@ Chat Graph 是运行在 ChatGPT 网页旁边的讨论结构导航器。它只维
 - Decision / Reason / Resource / Routes 数据库
 - 从 Assistant Answer 自动生成大量正式 Node
 - 自动知识整理与完整对话备份
+- ChatGPT 原生编辑/重新生成分支建模
+- 联网事实核验、自动 PRD/代码生成或外部任务系统

@@ -4,6 +4,9 @@ import type {
   Project,
   QuestionCandidate,
   QuestionNode,
+  ReviewDocument,
+  ReviewJob,
+  ReviewVersion,
 } from "../types/domain";
 
 type LegacyBranch = {
@@ -26,6 +29,9 @@ export class DiscussionMapDatabase extends Dexie {
   nodes!: EntityTable<QuestionNode, "id">;
   candidates!: EntityTable<QuestionCandidate, "id">;
   nodeEvents!: EntityTable<NodeEvent, "id">;
+  reviewDocuments!: EntityTable<ReviewDocument, "id">;
+  reviewVersions!: EntityTable<ReviewVersion, "id">;
+  reviewJobs!: EntityTable<ReviewJob, "id">;
 
   constructor(name = "chatgpt-discussion-map") {
     super(name);
@@ -180,6 +186,29 @@ export class DiscussionMapDatabase extends Dexie {
         await table.bulkPut(nodes.map((node) => ({
           ...node,
           status: normalizeLegacyNodeStatus(node.status),
+        })));
+      });
+
+    this.version(9)
+      .stores({
+        projects: "id, updatedAt",
+        nodes:
+          "id, projectId, parentId, status, kind, [projectId+status], &[projectId+chatId+messageId], [projectId+chatId], chatId, createdAt, updatedAt",
+        candidates:
+          "id, projectId, status, &[projectId+chatId+messageId], [projectId+chatId], chatId, createdAt, updatedAt",
+        nodeEvents: "id, projectId, nodeId, type, source, createdAt, undoneAt",
+        reviewDocuments:
+          "id, projectId, chatId, scopeFamilyKey, activeVersionId, graphAnchorNodeId, savedAt, updatedAt, [projectId+scopeFamilyKey]",
+        reviewVersions:
+          "id, documentId, projectId, version, generatedAt, updatedAt, [documentId+version]",
+        reviewJobs:
+          "id, projectId, documentId, scopeFamilyKey, status, updatedAt, [projectId+status]",
+      })
+      .upgrade(async (transaction) => {
+        const nodes = await transaction.table("nodes").toArray() as QuestionNode[];
+        await transaction.table("nodes").bulkPut(nodes.map((node) => ({
+          ...node,
+          kind: node.kind ?? "captured",
         })));
       });
   }

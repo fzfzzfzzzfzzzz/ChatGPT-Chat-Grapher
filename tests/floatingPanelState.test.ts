@@ -89,7 +89,7 @@ describe("v0.6 floating panel state", () => {
 
   it("provides the complete current-project structure for the compact graph", () => {
     const root = node("node-root", "根问题", 1);
-    const child = node("node-child", "子问题", 2, root.id);
+    const child = { ...node("node-child", "子问题", 2, root.id), kind: "planned" as const };
     const state = buildFloatingPanelState({
       project,
       nodes: [child, root],
@@ -110,6 +110,7 @@ describe("v0.6 floating panel state", () => {
         parentId: root.id,
         question: child.question,
         status: child.status,
+        kind: "planned",
       },
     ]);
   });
@@ -152,6 +153,48 @@ describe("v0.6 floating panel state", () => {
     expect(state.parentOptions.map(({ id }) => id)).not.toContain(descendant.id);
   });
 
+  it("provides every valid parent for graph-node editing", () => {
+    const selected = node("node-selected", "需要修改父节点的问题", 100);
+    const availableParents = Array.from({ length: 65 }, (_, index) =>
+      node(`node-parent-${index}`, `候选父节点 ${index}`, index + 1),
+    );
+    const state = buildFloatingPanelState({
+      project,
+      nodes: [selected, ...availableParents],
+      candidates: [],
+      selectedNodeId: selected.id,
+      mediumConfidence: 0.6,
+    });
+
+    expect(state.parentOptions).toHaveLength(availableParents.length);
+    expect(state.parentOptions.map(({ id }) => id)).toEqual(
+      [...availableParents].reverse().map(({ id }) => id),
+    );
+    expect(state.parentOptions[0]?.isPrevious).toBe(true);
+  });
+
+  it("marks and prioritizes the latest legal previous node in the same conversation", () => {
+    const previous = node("node-previous", "同一会话上一问", 20);
+    const current = node("node-current", "当前问题", 30);
+    const otherChat = {
+      ...node("node-other-chat", "其他会话最近编辑", 25),
+      chatId: "chat-2",
+      updatedAt: 100,
+    };
+    const state = buildFloatingPanelState({
+      project,
+      nodes: [previous, current, otherChat],
+      candidates: [],
+      selectedNodeId: current.id,
+      mediumConfidence: 0.6,
+    });
+
+    expect(state.parentOptions).toEqual([
+      { id: previous.id, question: previous.question, isPrevious: true },
+      { id: otherChat.id, question: otherChat.question },
+    ]);
+  });
+
   it("allows a graph-selected node to be viewed without a conversation URL", () => {
     const selected = node("node-selected", "项目中的历史问题", 1);
     const state = buildFloatingPanelState({
@@ -165,6 +208,46 @@ describe("v0.6 floating panel state", () => {
     expect(state.viewingNodeId).toBe(selected.id);
     expect(state.currentNodeId).toBe(selected.id);
     expect(state.currentQuestion).toBe(selected.question);
+  });
+
+  it("selects an exact candidate even when the conversation has a newer candidate", () => {
+    const previous = node("node-previous", "目标候选的上一问", 4);
+    const otherChat = {
+      ...node("node-other-chat", "其他会话节点", 6),
+      chatId: "chat-2",
+      updatedAt: 100,
+    };
+    const selected = candidate({
+      id: "candidate-selected",
+      question: "需要继续选择父节点的问题",
+      status: "inbox",
+      createdAt: 5,
+      updatedAt: 5,
+    });
+    const newer = candidate({
+      id: "candidate-newer",
+      question: "同一会话中更新的问题",
+      messageId: "message-newer",
+      status: "inbox",
+      createdAt: 20,
+      updatedAt: 20,
+    });
+
+    const state = buildFloatingPanelState({
+      project,
+      nodes: [previous, otherChat],
+      candidates: [selected, newer],
+      chatId: "chat-1",
+      selectedCandidateId: selected.id,
+      mediumConfidence: 0.6,
+    });
+
+    expect(state.currentCandidateId).toBe(selected.id);
+    expect(state.currentQuestion).toBe(selected.question);
+    expect(state.parentOptions).toEqual([
+      { id: previous.id, question: previous.question, isPrevious: true },
+      { id: otherChat.id, question: otherChat.question },
+    ]);
   });
 
   it("falls back to the latest question when the selected node no longer exists", () => {

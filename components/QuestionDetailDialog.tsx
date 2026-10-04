@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { Crosshair, Trash2 } from "lucide-react";
-import { isDescendant } from "../graph/questionTree";
-import type { NodeStatus, QuestionNode } from "../types/domain";
+import { getValidParentNodes } from "../graph/questionTree";
+import type { NodeStatus, QuestionNode, QuestionReference } from "../types/domain";
 import { Modal } from "./Modal";
 import { STATUS_LABELS } from "./StatusPill";
+import { QuestionReferenceList } from "./QuestionReferenceList";
 
 type Props = {
   node: QuestionNode;
@@ -11,6 +12,7 @@ type Props = {
   onSave: (input: { summary: string; status: NodeStatus; parentId: string | null }) => Promise<boolean>;
   onFocus: () => Promise<void>;
   onLocate: () => Promise<void>;
+  onLocateReference?: (reference: QuestionReference) => Promise<void>;
   onDelete: () => void;
   onClose: () => void;
 };
@@ -21,6 +23,7 @@ export function QuestionDetailDialog({
   onSave,
   onFocus,
   onLocate,
+  onLocateReference,
   onDelete,
   onClose,
 }: Props) {
@@ -28,10 +31,7 @@ export function QuestionDetailDialog({
   const [status, setStatus] = useState<NodeStatus>(node.status);
   const [parentId, setParentId] = useState(node.parentId ?? "");
   const [saving, setSaving] = useState(false);
-  const validParents = nodes.filter(
-    (candidate) =>
-      candidate.id !== node.id && !isDescendant(nodes, candidate.id, node.id),
-  );
+  const validParents = getValidParentNodes(nodes, node.id);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -44,12 +44,16 @@ export function QuestionDetailDialog({
   }
 
   return (
-    <Modal title="问题节点" description="节点内容只保留问题、摘要和状态。" onClose={onClose}>
+    <Modal title="问题节点" description="节点保留问题、摘要、状态和轻量引用信息。" onClose={onClose}>
       <form className="form-stack" onSubmit={(event) => void submit(event)}>
         <div className="question-readonly">
           <span>问题</span>
           <p>{node.question}</p>
         </div>
+        <QuestionReferenceList
+          references={node.references ?? []}
+          {...(onLocateReference ? { onLocate: onLocateReference } : {})}
+        />
         <label>
           摘要
           <textarea
@@ -81,8 +85,8 @@ export function QuestionDetailDialog({
         </div>
         <div className="question-dialog__nav">
           <button className="button" type="button" onClick={() => void onFocus()}>设为当前焦点</button>
-          <button className="button" type="button" onClick={() => void onLocate()}>
-            <Crosshair size={14} /> 回到原消息
+          <button className="button" type="button" disabled={node.kind === "planned"} onClick={() => void onLocate()}>
+            <Crosshair size={14} /> {node.kind === "planned" ? "发送后可定位" : "回到原消息"}
           </button>
         </div>
         <div className="form-actions form-actions--between">
